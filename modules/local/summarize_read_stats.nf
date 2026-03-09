@@ -30,6 +30,6 @@ process SUMMARIZE_READ_STATS {
 
     script:
     """
-    Rscript summarize_read_stats.R
+    summarize_read_stats.R
     """
 }
