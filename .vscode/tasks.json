@@ -1,0 +1,12 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build EsViritu Docker image",
+			"type": "shell",
+			"command": "docker build -t esviritu_pipeline:latest docker/",
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}
