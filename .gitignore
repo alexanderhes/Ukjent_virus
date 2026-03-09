@@ -11,6 +11,9 @@ results/
 assets/db/
 assets/host_ref/*.bt2
 assets/host_ref/*.fasta
+assets/host_ref/*.fna
+assets/host_ref/*.fna.gz
+assets/host_ref/*.gz
 
 # Test data (large FASTQs, not needed in repo)
 assets/test_data/
