@@ -369,7 +369,7 @@ overview <- asm %>%
     trimmed_reads, trim_removed_pct, dedup_reads, dup_rate_pct,
     # Part 2: EsViritu
     virus_name, family, genus, species, subspecies = subspecies_col,
-    esv_accession    = gsub(",", ";", Accession),
+    esv_accession    = Accession,
     genome_length_bp = Asm_length,
     esv_read_count   = read_count,
     esv_covered_bases = covered_bases,
