@@ -121,8 +121,8 @@ The samplesheet is a delimited text file (default delimiter: `;`) with a header 
 
 ```
 sample;fastq_dir
-2676227-UV;/path/to/raw_data/2676227-UV
-2683778-UV;/path/to/raw_data/2683778-UV
+sample1-UV;/path/to/raw_data/sample1-UV
+sample2-UV;/path/to/raw_data/sample2-UV
 ```
 
 **Rules:**
@@ -430,8 +430,8 @@ Required format — semicolon-delimited, two columns:
 
 ```
 sample;fastq_dir
-2683778-UV;/mnt/N/Virologi/NGS/0-Sekvenseringsbiblioteker/Illumina_Run/NGS_SEQ-20260210-01/2683778-UV
-2669015-UV;/mnt/N/Virologi/NGS/0-Sekvenseringsbiblioteker/Illumina_Run/NGS_SEQ-20260210-01/2669015-UV
+sample1-UV;/mnt/N/Virologi/NGS/0-Sekvenseringsbiblioteker/Illumina_Run/NGS_SEQ-20260210-01/sample1-UV
+sample2-UV;/mnt/N/Virologi/NGS/0-Sekvenseringsbiblioteker/Illumina_Run/NGS_SEQ-20260210-01/sample2-UV
 ```
 
 - `sample` — unique sample identifier (no spaces)
