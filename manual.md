@@ -196,7 +196,7 @@ Raw reads (R1 + R2)
  FASTP_DEDUP          deduplication on already-trimmed reads
        │               (~40–50% of trimmed reads are duplicates)
        ▼
- ESVIRITU             virus detection (three-pass bowtie2 + minimap2 pipeline)
+ ESVIRITU             virus detection 
        │               produces per-sample HTML report, BAM files, detection TSVs
        │
        ├──────────────────────────────────────────────────────────────┐
@@ -205,7 +205,7 @@ Raw reads (R1 + R2)
  COLLECT_READ_STATS   parses fastp JSONs & raw counts    SPLIT_VIRAL_READS     extract per-species reads
  SUMMARIZE_READ_STATS combine across all samples         SPADES_ASSEMBLY       de novo assembly (metaSPAdes)
  SUMMARIZE_ESV        batch detection summary            BLASTN_VALIDATE       BLAST contigs vs species DB
- MAKE_OVERVIEW_TABLE  29-column overview TSV             SUMMARIZE_VALIDATION  per-sample BLAST summary
+ MAKE_OVERVIEW_TABLE  30-column overview TSV             SUMMARIZE_VALIDATION  per-sample BLAST summary
                                                          VISUALIZE_VALIDATION  per-sample contig PDF
 ```
 
@@ -223,7 +223,7 @@ Deduplication is intentionally separated from trimming. Running dedup **after** 
 
 ```
 results/
-└── <run_name>/
+└── <analysis_name>/
     ├── pipeline_info/
     │   ├── report.html          # Nextflow execution report
     │   ├── timeline.html        # Task timeline
@@ -239,7 +239,7 @@ results/
     ├── esviritu_batch/
     │   └── esv_summary/         # Batch summary TSVs across all samples
     ├── overview/
-    │   ├── <sample>_overview.tsv          # Per-sample 29-column summary
+    │   ├── <sample>_overview.tsv          # Per-sample 30-column summary
     │   └── esv_staged.overview.tsv        # All samples combined
     └── validation/              # (--validate only)
         ├── <sample>_validation_contigs.pdf    # Contig alignment plot (multi-page PDF)
@@ -314,7 +314,7 @@ Enable with `--validate`. The sub-workflow runs for every (sample × detected sp
 
 ### Taxonomic level for assembly (`--assembly_taxon_level`)
 
-By default (`subspecies`), reads are grouped and assembled at the finest available taxonomic resolution — using the subspecies rank when EsViritu assigns one (e.g. `hepatitis C virus genotype 1a`), falling back to species otherwise. This is important for diverse species groups such as Rotaviruses (where genotype defines the clinical strain, e.g. `G9P[8]`) and Enteroviruses.
+By default (`subspecies`), reads are grouped and assembled at the finest available taxonomic resolution — using the subspecies rank when EsViritu assigns one (e.g. `hepatitis C virus genotype 1a`), falling back to species otherwise. 
 
 Use `--assembly_taxon_level species` to always group at species level.
 
@@ -387,7 +387,7 @@ N-drive (SMB)      →  local temp storage  →  Nextflow pipeline  →  N-drive
 ### Usage
 
 ```bash
-bash NGS_wrapper.sh -r <RUN_NAME> -a <AGENS> -y <YEAR>
+bash NGS_wrapper.sh -r <analysis_name> -a <AGENS> -y <YEAR>
 ```
 
 **Example:**
@@ -475,7 +475,7 @@ The pipeline skips samples where `fastq_dir` does not contain exactly one file m
 
 ### ESVIRITU fails to find the database
 
-Confirm `--esviritu_db` points to a directory that contains a `.fna` file and a `.tsv` metadata file. The pipeline resolves these by glob (`find -L ... -name "*.fna"`).
+Confirm `--esviritu_db` points to a directory that contains a `.fna` file, a `.mmi` indexed file and a `.tsv` metadata file. The pipeline resolves these by glob (`find -L ... -name "*.fna"`).
 
 ### SPAdes assembles 0 contigs for a virus (`no_contigs_assembled`)
 
