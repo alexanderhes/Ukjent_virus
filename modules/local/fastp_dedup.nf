@@ -26,15 +26,26 @@ process FASTP_DEDUP {
 
     script:
     """
-    fastp \\
-        -i ${r1} \\
-        -I ${r2} \\
-        -o ${meta.id}_dedup_R1.fastq.gz \\
-        -O ${meta.id}_dedup_R2.fastq.gz \\
-        --dedup \\
-        --thread ${task.cpus} \\
-        --json ${meta.id}_fastp_dedup.json \\
-        --html ${meta.id}_fastp_dedup.html \\
-        2> ${meta.id}_fastp_dedup.log
+    read_count=\$(seqkit stats -T -j 1 ${r1} 2>/dev/null | awk 'NR==2{print \$4+0}')
+
+    if [ "\${read_count}" -gt 0 ]; then
+        fastp \\
+            -i ${r1} \\
+            -I ${r2} \\
+            -o ${meta.id}_dedup_R1.fastq.gz \\
+            -O ${meta.id}_dedup_R2.fastq.gz \\
+            --dedup \\
+            --thread ${task.cpus} \\
+            --json ${meta.id}_fastp_dedup.json \\
+            --html ${meta.id}_fastp_dedup.html \\
+            2> ${meta.id}_fastp_dedup.log
+    else
+        echo "WARNING: ${meta.id} has 0 reads — skipping FASTP_DEDUP"
+        cp ${r1} ${meta.id}_dedup_R1.fastq.gz
+        cp ${r2} ${meta.id}_dedup_R2.fastq.gz
+        printf '{"summary":{"before_filtering":{"total_reads":0},"after_filtering":{"total_reads":0}}}' \\
+            > ${meta.id}_fastp_dedup.json
+        touch ${meta.id}_fastp_dedup.html ${meta.id}_fastp_dedup.log
+    fi
     """
 }
