@@ -28,9 +28,9 @@ host_filtered = trim['summary']['before_filtering']['total_reads']
 trimmed       = trim['summary']['after_filtering']['total_reads']
 dedup_reads   = dedup['summary']['after_filtering']['total_reads']
 
-host_removal_pct = round((raw_reads - host_filtered) / raw_reads * 100, 2)
-trim_removed_pct = round((host_filtered - trimmed)   / host_filtered * 100, 2)
-dup_rate_pct     = round((trimmed - dedup_reads)      / trimmed * 100, 2)
+host_removal_pct = round((raw_reads - host_filtered) / raw_reads * 100, 2) if raw_reads > 0 else 0.0
+trim_removed_pct = round((host_filtered - trimmed)   / host_filtered * 100, 2) if host_filtered > 0 else 0.0
+dup_rate_pct     = round((trimmed - dedup_reads)      / trimmed * 100, 2) if trimmed > 0 else 0.0
 
 header = "\t".join([
     "sample_ID", "raw_reads", "host_filtered_reads",

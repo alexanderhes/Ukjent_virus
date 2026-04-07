@@ -59,14 +59,25 @@ process HOST_FILTER {
     # Independent per-read filtering means a read may be present in one file
     # but host-filtered away in the other. seqkit pair matches by read name
     # and discards singletons, producing two guaranteed-synchronised FASTQs.
-    seqkit pair \\
-        -1 ${meta.id}_unfilt_R1.fastq.gz \\
-        -2 ${meta.id}_unfilt_R2.fastq.gz \\
-        -O paired_out
+    # Guard: if either file is empty (all reads were host-filtered) skip pairing
+    # to avoid seqkit pair crashing on an empty gzip (EOF error).
+    r1_count=\$(seqkit stats -T ${meta.id}_unfilt_R1.fastq.gz 2>/dev/null | awk 'NR==2{print \$4+0}')
+    r2_count=\$(seqkit stats -T ${meta.id}_unfilt_R2.fastq.gz 2>/dev/null | awk 'NR==2{print \$4+0}')
 
-    mv paired_out/${meta.id}_unfilt_R1.fastq.gz ${meta.id}_hostfilt_R1.fastq.gz
-    mv paired_out/${meta.id}_unfilt_R2.fastq.gz ${meta.id}_hostfilt_R2.fastq.gz
+    if [ "\${r1_count}" -gt 0 ] && [ "\${r2_count}" -gt 0 ]; then
+        seqkit pair \\
+            -1 ${meta.id}_unfilt_R1.fastq.gz \\
+            -2 ${meta.id}_unfilt_R2.fastq.gz \\
+            -O paired_out
 
-    rm -rf paired_out
+        mv paired_out/${meta.id}_unfilt_R1.fastq.gz ${meta.id}_hostfilt_R1.fastq.gz
+        mv paired_out/${meta.id}_unfilt_R2.fastq.gz ${meta.id}_hostfilt_R2.fastq.gz
+        rm -rf paired_out
+    else
+        # All reads were host-filtered; rename as-is so output files are present
+        # and downstream processes receive empty-but-valid FASTQs
+        mv ${meta.id}_unfilt_R1.fastq.gz ${meta.id}_hostfilt_R1.fastq.gz
+        mv ${meta.id}_unfilt_R2.fastq.gz ${meta.id}_hostfilt_R2.fastq.gz
+    fi
     """
 }
