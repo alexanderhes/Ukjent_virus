@@ -44,16 +44,36 @@ process ESVIRITU {
     """
     mkdir -p esv_out
 
-    EsViritu \\
-        -r ${r1} ${r2} \\
-        -s ${meta.id} \\
-        -o esv_out \\
-        -p paired \\
-        -q False \\
-        --dedup False \\
-        -t ${task.cpus} \\
-        --db ${esviritu_db} \\
-        --temp ${meta.id}_temp \\
-        ${keep_flag}
+    read_count=\$(seqkit stats -T -j 1 ${r1} 2>/dev/null | awk 'NR==2{print \$4+0}')
+
+    if [ "\${read_count}" -gt 0 ]; then
+        EsViritu \\
+            -r ${r1} ${r2} \\
+            -s ${meta.id} \\
+            -o esv_out \\
+            -p paired \\
+            -q False \\
+            --dedup False \\
+            -t ${task.cpus} \\
+            --db ${esviritu_db} \\
+            --temp ${meta.id}_temp \\
+            ${keep_flag}
+    else
+        # No reads after host filtering — produce header-only placeholder outputs
+        # so all downstream processes receive valid (empty) files.
+        echo "WARNING: ${meta.id} has 0 reads after host filtering — skipping EsViritu"
+
+        printf 'sample_ID\tName\tdescription\tLength\tSegment\tAccession\tAssembly\tAsm_length\tkingdom\tphylum\ttclass\torder\tfamily\tgenus\tspecies\tsubspecies\tRPKMF\tread_count\tcovered_bases\tmean_coverage\tavg_read_identity\tPi\tfiltered_reads_in_sample\n' \
+            > esv_out/${meta.id}.detected_virus.info.tsv
+
+        printf 'sample_ID\tfiltered_reads_in_sample\tAssembly\tAsm_length\tkingdom\tphylum\ttclass\torder\tfamily\tgenus\tspecies\tsubspecies\tread_count\tcovered_bases\tavg_read_identity\tAccession\tSegment\tRPKMF\n' \
+            > esv_out/${meta.id}.detected_virus.assembly_summary.tsv
+
+        printf 'sample_ID\tfiltered_reads_in_sample\tkingdom\tphylum\ttclass\torder\tfamily\tgenus\tspecies\tsubspecies\tread_count\tRPKMF\tavg_read_identity\tassembly_list\n' \
+            > esv_out/${meta.id}.tax_profile.tsv
+
+        touch esv_out/${meta.id}_final_consensus.fasta
+        touch esv_out/${meta.id}_EsViritu_reactable.html
+    fi
     """
 }
