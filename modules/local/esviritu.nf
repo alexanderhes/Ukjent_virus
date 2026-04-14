@@ -57,7 +57,20 @@ process ESVIRITU {
             -t ${task.cpus} \\
             --db ${esviritu_db} \\
             --temp ${meta.id}_temp \\
-            ${keep_flag}
+            ${keep_flag} || true
+
+        # EsViritu may exit 0 but produce no output when no reads map to the DB
+        if [ ! -f "esv_out/${meta.id}.detected_virus.info.tsv" ]; then
+            echo "WARNING: ${meta.id} — EsViritu produced no output (no reads mapped to DB) — writing placeholder files"
+            printf 'sample_ID\tName\tdescription\tLength\tSegment\tAccession\tAssembly\tAsm_length\tkingdom\tphylum\ttclass\torder\tfamily\tgenus\tspecies\tsubspecies\tRPKMF\tread_count\tcovered_bases\tmean_coverage\tavg_read_identity\tPi\tfiltered_reads_in_sample\n' \
+                > esv_out/${meta.id}.detected_virus.info.tsv
+            printf 'sample_ID\tfiltered_reads_in_sample\tAssembly\tAsm_length\tkingdom\tphylum\ttclass\torder\tfamily\tgenus\tspecies\tsubspecies\tread_count\tcovered_bases\tavg_read_identity\tAccession\tSegment\tRPKMF\n' \
+                > esv_out/${meta.id}.detected_virus.assembly_summary.tsv
+            printf 'sample_ID\tfiltered_reads_in_sample\tkingdom\tphylum\ttclass\torder\tfamily\tgenus\tspecies\tsubspecies\tread_count\tRPKMF\tavg_read_identity\tassembly_list\n' \
+                > esv_out/${meta.id}.tax_profile.tsv
+            touch esv_out/${meta.id}_final_consensus.fasta
+            touch esv_out/${meta.id}_EsViritu_reactable.html
+        fi
     else
         # No reads after host filtering — produce header-only placeholder outputs
         # so all downstream processes receive valid (empty) files.
