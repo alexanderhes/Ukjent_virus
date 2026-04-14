@@ -4,10 +4,10 @@
  * De novo assembly of per-species read sets using SPAdes.
  *
  * Two paths:
- *   ≥ params.validate_min_reads → SPAdes (--meta) assembly; contigs shorter than
- *                                  params.validate_min_contig_len are filtered out.
- *                                  If SPAdes produces no usable contigs the output
- *                                  is an empty FASTA.
+ *   ≥ params.validate_min_reads → SPAdes assembly (mode driven by spades_mode input);
+ *                                  contigs shorter than params.validate_min_contig_len
+ *                                  are filtered out. If SPAdes produces no usable
+ *                                  contigs the output is an empty FASTA.
  *   < params.validate_min_reads → empty query FASTA; BLASTN_VALIDATE will skip
  *                                  BLAST and write a header-only result.
  *
@@ -23,6 +23,7 @@ process SPADES_ASSEMBLY {
 
     input:
     tuple val(meta), path(r1), path(r2)
+    val spades_mode   // assembly mode: rnaviral | meta | isolate (passed from main.nf)
 
     output:
     tuple val(meta), path("${meta.id}_${meta.safe_species}_query.fasta"), emit: query
@@ -37,7 +38,7 @@ process SPADES_ASSEMBLY {
 
     if [ "\${count}" -ge "${min_reads}" ]; then
         spades.py \\
-            --meta \\
+            --${spades_mode} \\
             -1 ${r1} \\
             -2 ${r2} \\
             -o spades_out \\

@@ -27,6 +27,7 @@ log.info """
     ║  esviritu_db : ${params.esviritu_db}
     ║  outdir      : ${params.outdir}
     ║  validate    : ${params.validate}
+    ║  spades_mode : ${params.spades_mode ?: (params.esviritu_db ==~ /(?i).*HEV.*/ ? 'rnaviral (auto)' : 'meta (auto)')}
     ╚═══════════════════════════════════════════════╝
     """.stripIndent()
 
@@ -76,6 +77,15 @@ workflow {
         .fromPath(params.esviritu_db, checkIfExists: true)
         .first()
         .set { ch_esviritu_db }
+
+    // ── Derive SPAdes assembly mode ──────────────────────────────────────────
+    // Explicit --spades_mode always wins. Otherwise auto-detect from DB name:
+    //   DB path/name contains 'HEV' (case-insensitive) → rnaviral
+    //   anything else                                   → meta
+    // To add future RNA-virus DBs, extend the pattern with | e.g. HEV|RSV
+    def effective_spades_mode = params.spades_mode ?:
+        (params.esviritu_db ==~ /(?i).*HEV.*/ ? 'rnaviral' : 'meta')
+    Channel.value(effective_spades_mode).set { ch_spades_mode }
 
     // ── Pipeline steps ───────────────────────────────────────────────────────────────────────────────
     HOST_FILTER(ch_reads, ch_host_index)
@@ -158,7 +168,7 @@ workflow {
 
         SPLIT_VIRAL_READS(ch_split_input)
 
-        SPADES_ASSEMBLY(SPLIT_VIRAL_READS.out.reads)
+        SPADES_ASSEMBLY(SPLIT_VIRAL_READS.out.reads, ch_spades_mode)
 
         BLASTN_VALIDATE(SPADES_ASSEMBLY.out.query, ch_esviritu_db)
 
