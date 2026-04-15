@@ -117,7 +117,7 @@ blast_empty <- tibble(
 )
 
 if (run_validate) {
-  val_files <- list.files(".", pattern = "_validation_summary\\.tsv$",
+  val_files <- list.files(".", pattern = "_blastn\\.tsv$",
                           full.names = TRUE)
 
   blast_raw <- if (length(val_files) > 0) {
