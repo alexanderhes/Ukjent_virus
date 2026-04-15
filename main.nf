@@ -11,10 +11,8 @@ include { SUMMARIZE_READ_STATS } from './modules/local/summarize_read_stats'
 include { MAKE_OVERVIEW_TABLE  } from './modules/local/make_overview_table'
 
 // Validation sub-workflow modules (only loaded when --validate is enabled)
-include { SPLIT_VIRAL_READS      } from './modules/local/split_viral_reads'
 include { SPADES_ASSEMBLY        } from './modules/local/spades_assembly'
 include { BLASTN_VALIDATE        } from './modules/local/blastn_validate'
-include { SUMMARIZE_VALIDATION   } from './modules/local/summarize_validation'
 include { VISUALIZE_VALIDATION   } from './modules/local/visualize_validation'
 
 // ── Logging ──────────────────────────────────────────────────────────────────
@@ -116,63 +114,34 @@ workflow {
     )
 
     // ── Validation sub-workflow ──────────────────────────────────────────────
-    // Enabled with --validate. For each detected viral species in every sample:
-    //   1. Extract reads from the third-pass BAM that map to any accession in
-    //      that species group (multiple strains pooled per species).
-    //   2. De novo assemble with SPAdes; filter contigs < validate_min_contig_len.
-    //      If read count < validate_min_reads, convert R1 to FASTA instead.
-    //   3. BLAST assembled contigs against the full EsViritu nucleotide DB.
-    //   4. Summarise per-species BLAST hits into a per-sample TSV.
+    // Enabled with --validate. For each sample:
+    //   1. De novo assemble all quality-filtered reads with SPAdes.
+    //      Contigs < validate_min_contig_len are filtered; if total read count
+    //      < validate_min_reads the assembly is skipped (empty query FASTA).
+    //   2. BLAST assembled contigs against the full EsViritu .fna.
+    //      Each contig is assigned exclusively to the detected safe_taxon
+    //      with the highest total BLAST bitscore.
+    //   3. Taxonomy grouping (subspecies / species) and safe_taxon derivation
+    //      are performed inside BLASTN_VALIDATE using params.assembly_taxon_level.
     if (params.validate) {
 
-        // Fan out ESVIRITU results to one channel item per (sample × species):
-        //   parse detected_virus.info.tsv, group all accessions by species.
-        //   Accessions are stored in meta so they are available in BLASTN_VALIDATE.
-        ESVIRITU.out.tsv_info_meta
-            .splitCsv(header: true, sep: '\t', elem: 1)
-            .map  { meta, row ->
-                // Resolve grouping taxon: subspecies when available and requested,
-                // otherwise fall back to species.
-                def taxon = (params.assembly_taxon_level == 'subspecies' &&
-                             row.subspecies && row.subspecies.trim() != '')
-                             ? row.subspecies
-                             : row.species
-                [meta, taxon, row.Accession]
-            }
-            .groupTuple(by: [0, 1])
-            // [meta, taxon_str, [acc1, acc2, ...]]
-            .map  { meta, taxon, accs ->
-                // Strip rank prefix (s__ / t__) and replace all non-alphanumeric
-                // characters (incl. brackets used in Rotavirus serotype names)
-                // with underscores for safe use in file names.
-                // IMPORTANT: this regex MUST stay in sync with to_safe() in
-                // bin/make_overview_table.R — any divergence will silently break
-                // safe_taxon joins in the overview table.
-                def safe = taxon.replaceAll(/^[st]__/, '').replaceAll(/[^A-Za-z0-9._-]/, '_')
-                [meta + [species: taxon, safe_species: safe, accessions: accs], accs]
-            }
-            .set { ch_species_accs }
+        // Assemble all quality-filtered reads per sample in one SPAdes job.
+        SPADES_ASSEMBLY(FASTP_DEDUP.out.reads, ch_spades_mode)
 
-        // Key the species channel and BAM channel both on meta.id so we can
-        // join them despite meta having different extra fields.
-        ch_species_accs
-            .map { meta, accs -> [meta.id, meta, accs] }
-            .combine(
-                ESVIRITU.out.third_bam
-                    .join(ESVIRITU.out.third_bai)
-                    .map { meta, bam, bai -> [meta.id, bam, bai] },
-                by: 0
+        // Join the per-sample assembly query with the ESVIRITU detection info TSV
+        // so BLASTN_VALIDATE can derive detected taxa without a per-species fan-out.
+        SPADES_ASSEMBLY.out.query
+            .map { meta, query -> [meta.id, meta, query] }
+            .join(
+                ESVIRITU.out.tsv_info_meta
+                    .map { meta, info_tsv -> [meta.id, info_tsv] }
             )
-            .map { id, meta, accs, bam, bai -> [meta, accs, bam, bai] }
-            .set { ch_split_input }
+            .map { id, meta, query, info_tsv -> [meta, query, info_tsv] }
+            .set { ch_blast_input }
 
-        SPLIT_VIRAL_READS(ch_split_input)
+        BLASTN_VALIDATE(ch_blast_input, ch_esviritu_db)
 
-        SPADES_ASSEMBLY(SPLIT_VIRAL_READS.out.reads, ch_spades_mode)
-
-        BLASTN_VALIDATE(SPADES_ASSEMBLY.out.query, ch_esviritu_db)
-
-        // Collect per-species sidecar files produced by BLASTN_VALIDATE
+        // Collect per-sample sidecar files produced by BLASTN_VALIDATE
         BLASTN_VALIDATE.out.has_contigs
             .collect()
             .set { ch_has_contigs_all }
@@ -181,23 +150,14 @@ workflow {
             .collect()
             .set { ch_ref_lengths_all }
 
-        // Group all per-species BLAST TSVs for each sample, then summarise
-        BLASTN_VALIDATE.out.blast_results
-            .map  { meta, tsv -> [meta.id, meta, tsv] }
-            .groupTuple(by: 0)
-            .map  { id, metas, tsvs -> [metas[0].subMap('id'), tsvs] }
-            .set  { ch_summary_input }
-
-        SUMMARIZE_VALIDATION(ch_summary_input)
-
-        VISUALIZE_VALIDATION(SUMMARIZE_VALIDATION.out.summary, ch_ref_lengths_all)
+        VISUALIZE_VALIDATION(BLASTN_VALIDATE.out.blast_results, ch_ref_lengths_all)
 
         // ── Comprehensive overview table (with Part 3 BLAST data) ──────────
         MAKE_OVERVIEW_TABLE(
             SUMMARIZE_READ_STATS.out.read_stats,
             SUMMARIZE_ESV.out.assembly_summary_tsv,
             SUMMARIZE_READ_STATS.out.info_enriched,
-            SUMMARIZE_VALIDATION.out.summary.map { meta, tsv -> tsv }.collect(),
+            BLASTN_VALIDATE.out.blast_results.map { meta, tsv -> tsv }.collect(),
             ch_has_contigs_all,
             ch_ref_lengths_all,
             true,
