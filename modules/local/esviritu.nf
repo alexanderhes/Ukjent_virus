@@ -8,8 +8,8 @@
  * both are handled by upstream HOST_FILTER, FASTP_TRIM, and FASTP_DEDUP.
  * No --filter_dir is passed — host filtering is already complete.
  *
- * --keep True retains intermediate BAM/alignment files in --temp for
- * use by future downstream modules (species-level assembly etc.).
+ * --keep True retains intermediate BAM/alignment files in --temp.
+ * Enable via params.esviritu_keep when BAMs are needed for other purposes.
  */
 
 process ESVIRITU {
@@ -39,8 +39,8 @@ process ESVIRITU {
     tuple val(meta), path("${meta.id}_temp/${meta.id}.third.filt.sorted.bam.bai"), emit: third_bai, optional: true
 
     script:
-    // Force --keep True whenever validate is enabled so BAMs are available
-    def keep_flag = (params.esviritu_keep || params.validate) ? '--keep True' : ''
+    // --keep True retains intermediate temp BAMs; driven solely by esviritu_keep param
+    def keep_flag = params.esviritu_keep ? '--keep True' : ''
     """
     mkdir -p esv_out
 
