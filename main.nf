@@ -76,6 +76,11 @@ workflow {
         .first()
         .set { ch_esviritu_db }
 
+    Channel
+        .fromPath("${params.esviritu_db}/*.tsv", checkIfExists: true)
+        .first()
+        .set { ch_esviritu_db_meta }
+
     // ── Derive SPAdes assembly mode ──────────────────────────────────────────
     // Explicit --spades_mode always wins. Otherwise auto-detect from DB name:
     //   DB path/name contains 'HEV' (case-insensitive) → rnaviral
@@ -119,8 +124,8 @@ workflow {
     //      Contigs < validate_min_contig_len are filtered; if total read count
     //      < validate_min_reads the assembly is skipped (empty query FASTA).
     //   2. BLAST assembled contigs against the full EsViritu .fna.
-    //      Each contig is assigned exclusively to the detected safe_taxon
-    //      with the highest total BLAST bitscore.
+    //      Each contig is assigned exclusively to the DB taxon with the
+    //      highest total BLAST bitscore.
     //   3. Taxonomy grouping (subspecies / species) and safe_taxon derivation
     //      are performed inside BLASTN_VALIDATE using params.assembly_taxon_level.
     if (params.validate) {
@@ -128,15 +133,7 @@ workflow {
         // Assemble all quality-filtered reads per sample in one SPAdes job.
         SPADES_ASSEMBLY(FASTP_DEDUP.out.reads, ch_spades_mode)
 
-        // Join the per-sample assembly query with the ESVIRITU detection info TSV
-        // so BLASTN_VALIDATE can derive detected taxa without a per-species fan-out.
         SPADES_ASSEMBLY.out.query
-            .map { meta, query -> [meta.id, meta, query] }
-            .join(
-                ESVIRITU.out.tsv_info_meta
-                    .map { meta, info_tsv -> [meta.id, info_tsv] }
-            )
-            .map { id, meta, query, info_tsv -> [meta, query, info_tsv] }
             .set { ch_blast_input }
 
         BLASTN_VALIDATE(ch_blast_input, ch_esviritu_db)
@@ -160,8 +157,10 @@ workflow {
             BLASTN_VALIDATE.out.blast_results.map { meta, tsv -> tsv }.collect(),
             ch_has_contigs_all,
             ch_ref_lengths_all,
+            ch_esviritu_db_meta,
             true,
-            params.validate_min_reads
+            params.validate_min_reads,
+            params.assembly_taxon_level
         )
     } else {
         // ── Overview table without validation (Part 3 columns = NA) ────────
@@ -187,8 +186,10 @@ workflow {
             ch_no_val,
             ch_no_has_contigs,
             ch_no_ref_lengths,
+            ch_esviritu_db_meta,
             false,
-            params.validate_min_reads
+            params.validate_min_reads,
+            params.assembly_taxon_level
         )
     }
 }
