@@ -6,9 +6,10 @@
  *      using the configured assembly_taxon_level (subspecies / species).
  *   2. Builds a BLAST nucleotide DB from the full EsViritu .fna.
  *   3. BLASTs the whole-sample contigs against that DB.
- *   4. Assigns each contig exclusively to the DB taxon that accumulates the
+ *   4. Assigns each contig exclusively to the DB accession that accumulates the
  *      highest total BLAST bitscore across all its hits.
- *   5. Writes per-sample output files compatible with the downstream R scripts:
+ *   5. Maps the winning accession to taxonomy using the metadata TSV.
+ *   6. Writes per-sample output files compatible with the downstream R scripts:
  *      - {id}_blastn.tsv      : hits with Sample and Species (safe_taxon) columns
  *      - {id}_ref_lengths.tsv : lengths of reference sequences retained in final hits
  *      - {id}_has_contigs.txt : sample assembly sentinel plus one row per BLAST taxon
@@ -83,43 +84,40 @@ process BLASTN_VALIDATE {
         -num_threads ${task.cpus} \
         -out blast_raw.tsv
 
-    # Step 4: Annotate hits with safe_taxon from the full metadata lookup.
-    awk -F'\t' 'BEGIN{OFS="\t"} NR==FNR{t[\$1]=\$2; next} \
-         { if (\$2 in t) print \$0"\t"t[\$2] }' \
-        acc_safe_taxon_full.tsv blast_raw.tsv > blast_with_taxon.tsv
-
-    # Step 5: Assign each contig exclusively to its best-match safe_taxon.
+    # Step 4: Assign each contig exclusively to its best-match accession.
     awk -F'\t' '
         BEGIN { OFS="\t" }
         {
-            contig = \$1; taxon = \$15; bs = \$13+0
-            score[contig, taxon] += bs
+            contig = \$1; accession = \$2; bs = \$13+0
+            score[contig, accession] += bs
         }
         END {
             for (key in score) {
                 split(key, parts, SUBSEP)
-                contig = parts[1]; taxon = parts[2]
+                contig = parts[1]; accession = parts[2]
                 if (!(contig in best_score) || score[key] > best_score[contig]) {
                     best_score[contig] = score[key]
-                    best_taxon[contig] = taxon
+                    best_accession[contig] = accession
                 }
             }
-            for (contig in best_taxon) print contig, best_taxon[contig]
+            for (contig in best_accession) print contig, best_accession[contig]
         }
-    ' blast_with_taxon.tsv > contig_assignments.tsv
+    ' blast_raw.tsv > contig_best_accessions.tsv
 
-    # Step 6: Keep only hits matching the assigned taxon for each contig.
+    # Step 5: Keep only hits matching the assigned accession for each contig,
+    # then annotate those hits with the winning accession's taxonomy.
     awk -F'\t' -v sample="${meta.id}" '
         BEGIN { OFS="\t" }
-        NR==FNR { best[\$1]=\$2; next }
+        FILENAME == ARGV[1] { best[\$1]=\$2; next }
+        FILENAME == ARGV[2] { taxon[\$1]=\$2; next }
         {
-            contig = \$1; taxon = \$15
-            if (contig in best && best[contig] == taxon)
-                print sample, taxon, \$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8, \$9, \$10, \$11, \$12, \$13, \$14
+            contig = \$1; accession = \$2
+            if (contig in best && best[contig] == accession && accession in taxon)
+                print sample, taxon[accession], \$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8, \$9, \$10, \$11, \$12, \$13, \$14
         }
-    ' contig_assignments.tsv blast_with_taxon.tsv >> ${meta.id}_blastn.tsv
+    ' contig_best_accessions.tsv acc_safe_taxon_full.tsv blast_raw.tsv >> ${meta.id}_blastn.tsv
 
-    # Step 7: Capture reference lengths for accessions retained in final hits.
+    # Step 6: Capture reference lengths for accessions retained in final hits.
     tail -n +2 ${meta.id}_blastn.tsv | cut -f4 | sort -u > ref_accessions.txt
 
     if [ -s ref_accessions.txt ]; then
@@ -130,10 +128,10 @@ process BLASTN_VALIDATE {
             species_refs.fasta >> ${meta.id}_ref_lengths.tsv
     fi
 
-    # Step 8: Write sample-level assembly status plus BLAST-assigned taxa.
+    # Step 7: Write sample-level assembly status plus BLAST-assigned taxa.
     {
         echo -e "${meta.id}\t__sample_assembly__\ttrue"
-        awk -F'\t' -v sample="${meta.id}" '{ print sample"\t"\$2"\ttrue" }' contig_assignments.tsv | sort -u
+        tail -n +2 ${meta.id}_blastn.tsv | cut -f2 | sort -u | awk -v sample="${meta.id}" '{ print sample"\t"\$1"\ttrue" }'
     } > ${meta.id}_has_contigs.txt
     """
 }
