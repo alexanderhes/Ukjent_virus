@@ -43,8 +43,10 @@ process MAKE_OVERVIEW_TABLE {
     path(validation_tsvs)       // collected validation summary TSVs, or a dummy file when --validate is off
     path(has_contigs_files)     // per-species has_contigs.txt markers from BLASTN_VALIDATE, or dummy
     path(ref_lengths_files)     // per-species reference sequence length TSVs from BLASTN_VALIDATE, or dummy
+    path(db_metadata_tsv)       // staged EsViritu DB metadata TSV for BLAST-only taxonomy enrichment
     val(run_validate)
     val(validate_min_reads)
+    val(assembly_taxon_level)
 
     output:
     path "esv_staged.overview.tsv",  emit: batch_overview
@@ -52,7 +54,7 @@ process MAKE_OVERVIEW_TABLE {
 
     script:
     """
-    make_overview_table.R ${run_validate} ${validate_min_reads}
+    make_overview_table.R ${run_validate} ${validate_min_reads} ${assembly_taxon_level}
     """
 }
 
