@@ -14,6 +14,7 @@ assets/host_ref/*.fasta
 assets/host_ref/*.fna
 assets/host_ref/*.fna.gz
 assets/host_ref/*.gz
+bin/investigate_contig_identity.R
 
 # Test data (large FASTQs, not needed in repo)
 assets/test_data/

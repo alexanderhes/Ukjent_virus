@@ -169,6 +169,8 @@ sample2-UV;/path/to/raw_data/sample2-UV
 | `--validate` | `false` | Enable the validation sub-workflow |
 | `--validate_min_reads` | `50` | Minimum virus-specific reads required to attempt SPAdes assembly |
 | `--validate_min_contig_len` | `800` | Minimum contig length (bp) to pass to BLAST |
+| `--validate_spades_max_pairs` | `500000` | If greater than 0, sample-level deduplicated read pairs above this cap are deterministically subsampled before SPAdes |
+| `--validate_spades_sample_seed` | `11` | Random seed used for deterministic SPAdes input subsampling |
 | `--assembly_taxon_level` | `subspecies` | Taxonomic grouping level for read extraction before assembly. `subspecies` uses the finest available rank (recommended for diverse groups such as Enteroviruses and Rotaviruses); `species` always groups at species level. |
 
 ### Resources
@@ -287,27 +289,23 @@ All BLAST hits across all species for the sample. Columns:
 
 ## 10. Validation Sub-workflow
 
-Enable with `--validate`. The sub-workflow runs for every (sample × detected species) pair where EsViritu reports a detection.
+Enable with `--validate`. The current sub-workflow runs once per sample on the deduplicated read pair produced by `FASTP_DEDUP`.
 
 ### Step-by-step
 
-1. **Read extraction** (`SPLIT_VIRAL_READS`): reads mapping to any reference accession belonging to the target species are extracted from the EsViritu third-pass BAM using `samtools view` + `samtools fastq`. Secondary and supplementary alignments are excluded. Mate synchronisation is enforced.
-
-2. **De novo assembly** (`SPADES_ASSEMBLY`): SPAdes is run in `--meta` mode. Assembly is skipped (empty query FASTA produced) if the species has fewer than `--validate_min_reads` reads. Contigs shorter than `--validate_min_contig_len` bp are filtered out with `seqkit seq --min-len`. If SPAdes produces no contigs meeting the length threshold the output FASTA is empty and the downstream BLAST step is skipped gracefully.
+1. **De novo assembly** (`SPADES_ASSEMBLY`): SPAdes is run on the full sample-level deduplicated read pair from `FASTP_DEDUP`, using the configured `spades_mode` (`meta` by default, or `rnaviral` for HEV databases when auto-detected). Assembly is skipped (empty query FASTA produced) if the sample has fewer than `--validate_min_reads` read pairs. When the sample exceeds `--validate_spades_max_pairs`, the FASTQ pair is deterministically subsampled with `seqkit sample` before assembly. `SPADES_ASSEMBLY` has an explicit `220.GB` memory allocation so the SPAdes `-m` setting resolves to `220`. Contigs shorter than `--validate_min_contig_len` bp are filtered out with `seqkit seq --min-len`. If SPAdes produces no contigs meeting the length threshold the output FASTA is empty and the downstream BLAST step is skipped gracefully.
 
    > **Note on assembly failures**: metaSPAdes requires successful insert-size estimation, which depends on FR-oriented read pairs with insert sizes larger than the reads themselves. For virus groups where the template fragments are very short (insert size ≈ read length), R1/R2 pairs may overlap completely, preventing insert-size estimation and resulting in 0 assembled contigs. This is a library preparation characteristic, not a pipeline bug. The `assembly_status` column will report `no_contigs_assembled` in this case.
 
-3. **BLAST validation** (`BLASTN_VALIDATE`): the assembled contigs are BLASTed against a small per-species reference database extracted from the EsViritu `.fna` file. Only accessions belonging to the detected species are included. Results use E-value ≤ 1×10⁻⁵.
+2. **BLAST validation** (`BLASTN_VALIDATE`): the assembled contigs are BLASTed against the full EsViritu `.fna` file. Each contig is assigned exclusively to the database taxon with the highest total BLAST bitscore. Results use E-value ≤ 1×10⁻⁵.
 
-4. **Summarise** (`SUMMARIZE_VALIDATION`): per-species BLAST TSVs are concatenated into a single per-sample summary.
-
-5. **Visualise** (`VISUALIZE_VALIDATION`): one PDF page per species showing contig coverage of the reference genome.
+3. **Visualise** (`VISUALIZE_VALIDATION`): one PDF page per matched taxon showing contig coverage of the reference genome.
 
 ### `assembly_status` values
 
 | Value | Meaning |
 |---|---|
-| `too_few_reads` | Fewer than `validate_min_reads` reads mapped — assembly not attempted |
+| `too_few_reads` | Fewer than `validate_min_reads` deduplicated read pairs available — assembly not attempted |
 | `no_contigs_assembled` | SPAdes ran but produced no contigs ≥ `validate_min_contig_len` bp |
 | `no_blast_hits` | Contigs were assembled but none had significant BLAST hits against the species reference database |
 | `assembled` | At least one contig had a significant BLAST hit |
@@ -451,7 +449,7 @@ Process resources are assigned by label in `conf/base.config`. Failed processes 
 | `process_medium` | 6 | 16 GB (×attempt) | 8 h (×attempt) |
 | `process_high` | 12 | 32 GB (×attempt) | 24 h (×attempt) |
 
-All values are capped at `--max_cpus`, `--max_memory`, and `--max_time`.
+Label-based values are capped at `--max_cpus`, `--max_memory`, and `--max_time`. `SPADES_ASSEMBLY` additionally has an explicit `220.GB` memory override so the SPAdes `-m` setting matches the host allocation.
 
 ### Docker containers
 
