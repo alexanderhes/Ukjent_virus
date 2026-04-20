@@ -26,6 +26,8 @@ log.info """
     ║  outdir      : ${params.outdir}
     ║  validate    : ${params.validate}
     ║  spades_mode : ${params.spades_mode ?: (params.esviritu_db ==~ /(?i).*HEV.*/ ? 'rnaviral (auto)' : 'meta (auto)')}
+    ║  spades_cap  : ${params.validate_spades_max_pairs ? "${params.validate_spades_max_pairs} pairs" : 'disabled'}
+    ║  spades_mem  : 220.GB
     ╚═══════════════════════════════════════════════╝
     """.stripIndent()
 
