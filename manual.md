@@ -142,6 +142,12 @@ sample2-UV;/path/to/raw_data/sample2-UV
 | `--host_index` | Path to the bowtie2 index prefix (without `.bt2` extension) |
 | `--esviritu_db` | Path to the EsViritu virus database directory |
 
+### Host filtering
+
+| Parameter | Default | Description |
+|---|---|---|
+| `--sensitive_host_filter` | `false` | Use high-sensitivity unpaired mode (`--very-sensitive-local`, R1+R2 separately, seqkit pair re-sync). Default `false` uses faster paired-end mode (`--sensitive-local`). |
+
 ### Output
 
 | Parameter | Default | Description |
@@ -189,8 +195,8 @@ sample2-UV;/path/to/raw_data/sample2-UV
 Raw reads (R1 + R2)
        │
        ▼
- HOST_FILTER          bowtie2 --very-sensitive-local (unpaired mode)
-       │               removes human T2T + PhiX reads; seqkit pair re-syncs
+ HOST_FILTER          bowtie2 --sensitive-local (paired-end mode, default)
+       │               removes human T2T + PhiX reads
        ▼
  FASTP_TRIM           adapter auto-detection, quality/length/complexity filter
        │               poly-G/X trimming
@@ -213,7 +219,9 @@ Raw reads (R1 + R2)
 
 ### Host filtering strategy
 
-bowtie2 is run independently on R1 and R2 (unpaired mode) with `--very-sensitive-local`. This judges each read on its own merits, delivering higher sensitivity than paired-mode filtering. After filtering, `seqkit pair` re-synchronises the two files, discarding any read whose mate was removed.
+By default, bowtie2 is run in **paired-end mode** with `--sensitive-local --no-discordant --no-mixed`. Unmapped pairs are written directly via `--un-conc-gz`, producing synchronised R1/R2 output in a single pass.
+
+To enable the original high-sensitivity mode (independently filtering R1 and R2 with `--very-sensitive-local`, then re-synchronising with `seqkit pair`), pass `--sensitive_host_filter true` to Nextflow or use `--sensitive-filter` in the wrapper script. This is slower but retains reads where only one mate maps to host.
 
 ### Trimming and deduplication (two-pass fastp)
 
