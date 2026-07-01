@@ -104,16 +104,18 @@ process HOST_FILTER {
             -p ${task.cpus} \\
             --no-discordant \\
             --no-mixed \\
-            --un-conc-gz ${meta.id}_unfilt.fastq.gz \\
+            --un-conc ${meta.id}_unfilt.fastq \\
             --no-unal \\
             -S /dev/null \\
             2> ${meta.id}_hostfilt.log
 
-        # Guard: if bowtie2 produced no unmapped pairs (all reads mapped to host),
-        # the .1/.2 files won't exist. Create empty-but-valid gzipped FASTQs.
-        if [ -f ${meta.id}_unfilt.fastq.gz.1 ] && [ -f ${meta.id}_unfilt.fastq.gz.2 ]; then
-            mv ${meta.id}_unfilt.fastq.gz.1 ${meta.id}_hostfilt_R1.fastq.gz
-            mv ${meta.id}_unfilt.fastq.gz.2 ${meta.id}_hostfilt_R2.fastq.gz
+        # Guard: if bowtie2 produced unmapped pairs, gzip and rename them.
+        # If all reads mapped to host (no unmapped pairs), create empty gzipped FASTQs.
+        if [ -f ${meta.id}_unfilt.fastq.1 ] && [ -f ${meta.id}_unfilt.fastq.2 ]; then
+            gzip ${meta.id}_unfilt.fastq.1
+            gzip ${meta.id}_unfilt.fastq.2
+            mv ${meta.id}_unfilt.fastq.1.gz ${meta.id}_hostfilt_R1.fastq.gz
+            mv ${meta.id}_unfilt.fastq.2.gz ${meta.id}_hostfilt_R2.fastq.gz
         else
             touch ${meta.id}_hostfilt_R1.fastq.gz
             touch ${meta.id}_hostfilt_R2.fastq.gz
