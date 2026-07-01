@@ -96,6 +96,10 @@ process HOST_FILTER {
         # ── Single paired-end run; unmapped pairs written via --un-conc-gz ──────
         # --no-discordant and --no-mixed prevent bowtie2 from attempting solo-read
         # alignments when a pair fails, keeping --un-conc-gz as the sole output path.
+        # The '%' in the --un-conc-gz path is replaced by bowtie2 with the mate
+        # number (1 or 2), giving deterministic output names. (Without a '%',
+        # bowtie2 inserts .1/.2 *before the final dot*, e.g. foo.fastq.1.gz — not
+        # foo.fastq.gz.1 — which is a common source of confusion.)
         bowtie2 \\
             --sensitive-local \\
             -x ${index} \\
@@ -104,21 +108,20 @@ process HOST_FILTER {
             -p ${task.cpus} \\
             --no-discordant \\
             --no-mixed \\
-            --un-conc ${meta.id}_unfilt.fastq \\
+            --un-conc-gz ${meta.id}_unfilt.R%.fastq.gz \\
             --no-unal \\
             -S /dev/null \\
             2> ${meta.id}_hostfilt.log
 
-        # Guard: if bowtie2 produced unmapped pairs, gzip and rename them.
-        # If all reads mapped to host (no unmapped pairs), create empty gzipped FASTQs.
-        if [ -f ${meta.id}_unfilt.fastq.1 ] && [ -f ${meta.id}_unfilt.fastq.2 ]; then
-            gzip ${meta.id}_unfilt.fastq.1
-            gzip ${meta.id}_unfilt.fastq.2
-            mv ${meta.id}_unfilt.fastq.1.gz ${meta.id}_hostfilt_R1.fastq.gz
-            mv ${meta.id}_unfilt.fastq.2.gz ${meta.id}_hostfilt_R2.fastq.gz
+        # Guard: if bowtie2 produced unmapped pairs, rename them to the expected
+        # output names. If all reads mapped to host (no unmapped pairs), the files
+        # won't exist, so create empty-but-valid gzipped FASTQs for downstream.
+        if [ -f ${meta.id}_unfilt.R1.fastq.gz ] && [ -f ${meta.id}_unfilt.R2.fastq.gz ]; then
+            mv ${meta.id}_unfilt.R1.fastq.gz ${meta.id}_hostfilt_R1.fastq.gz
+            mv ${meta.id}_unfilt.R2.fastq.gz ${meta.id}_hostfilt_R2.fastq.gz
         else
-            touch ${meta.id}_hostfilt_R1.fastq.gz
-            touch ${meta.id}_hostfilt_R2.fastq.gz
+            printf '' | gzip > ${meta.id}_hostfilt_R1.fastq.gz
+            printf '' | gzip > ${meta.id}_hostfilt_R2.fastq.gz
         fi
         """
     }
