@@ -109,8 +109,15 @@ process HOST_FILTER {
             -S /dev/null \\
             2> ${meta.id}_hostfilt.log
 
-        mv ${meta.id}_unfilt.fastq.gz.1 ${meta.id}_hostfilt_R1.fastq.gz
-        mv ${meta.id}_unfilt.fastq.gz.2 ${meta.id}_hostfilt_R2.fastq.gz
+        # Guard: if bowtie2 produced no unmapped pairs (all reads mapped to host),
+        # the .1/.2 files won't exist. Create empty-but-valid gzipped FASTQs.
+        if [ -f ${meta.id}_unfilt.fastq.gz.1 ] && [ -f ${meta.id}_unfilt.fastq.gz.2 ]; then
+            mv ${meta.id}_unfilt.fastq.gz.1 ${meta.id}_hostfilt_R1.fastq.gz
+            mv ${meta.id}_unfilt.fastq.gz.2 ${meta.id}_hostfilt_R2.fastq.gz
+        else
+            touch ${meta.id}_hostfilt_R1.fastq.gz
+            touch ${meta.id}_hostfilt_R2.fastq.gz
+        fi
         """
     }
 }
