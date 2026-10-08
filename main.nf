@@ -31,6 +31,22 @@ log.info """
     ╚═══════════════════════════════════════════════╝
     """.stripIndent()
 
+// ── Provisional verdict thresholds ───────────────────────────────────────────
+// Shown at start and end of every run until the verdict_* thresholds are
+// validated and params.verdict_thresholds_provisional is set to false.
+if (params.verdict_thresholds_provisional) {
+    def verdictWarning = """
+        WORK IN PROGRESS: overview verdict/flag thresholds are provisional and not validated.
+        Treat verdict, esv_verdict, blast_verdict, flags, esv_flags and blast_flags as indicative only.
+          esv      : min_reads=${params.verdict_esv_min_reads} min_breadth_pct=${params.verdict_esv_min_breadth_pct} divergent_identity_pct=${params.verdict_esv_divergent_identity_pct}
+          blast    : contig_min_aln_bp=${params.verdict_contig_min_aln_bp} contig_min_aln_pct=${params.verdict_contig_min_aln_pct} artefact_max_aln_bp=${params.verdict_artefact_max_aln_bp} artefact_max_aln_pct=${params.verdict_artefact_max_aln_pct} divergent_identity_pct=${params.verdict_blast_divergent_identity_pct}
+          recurrent: min_samples=${params.verdict_recurrent_min_samples}
+        Set verdict_thresholds_provisional = false in conf/params.config once validated.
+        """.stripIndent()
+    log.warn verdictWarning
+    workflow.onComplete { log.warn verdictWarning }
+}
+
 // ── Workflow ──────────────────────────────────────────────────────────────────
 workflow {
 
