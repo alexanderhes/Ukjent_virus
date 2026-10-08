@@ -30,3 +30,6 @@ assets/test_samplesheet.csv
 .DS_Store
 *.swp
 *.tmp
+
+# Local session handoff notes (not shared)
+HANDOFF.md
