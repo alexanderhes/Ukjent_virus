@@ -94,6 +94,7 @@ nextflow run main.nf \
 nextflow run main.nf \
     --samplesheet assets/test_samplesheet.csv \
     --host_index  assets/host_ref/host_index \
+    --host_blastdb assets/host_ref/blastdb/host_ref \
     --esviritu_db assets/db/esviritu_DB/v3.2.4 \
     --outdir      results/my_run \
     --validate
@@ -178,6 +179,16 @@ sample2-UV;/path/to/raw_data/sample2-UV
 | `--validate_spades_max_pairs` | `500000` | If greater than 0, sample-level deduplicated read pairs above this cap are deterministically subsampled before SPAdes |
 | `--validate_spades_sample_seed` | `11` | Random seed used for deterministic SPAdes input subsampling |
 | `--assembly_taxon_level` | `subspecies` | Taxonomic grouping level for read extraction before assembly. `subspecies` uses the finest available rank (recommended for diverse groups such as Enteroviruses and Rotaviruses); `species` always groups at species level. |
+| `--tblastx_rescue` | `true` | Experimental: tblastx of contigs without nucleotide support; passing hits are added to the overview |
+| `--host_contig_filter` | `true` | Remove host contigs (mainly human rRNA that assembles into contigs) before BLAST |
+| `--host_blastdb` | set by `host_<alias>` profile | Host BLAST database prefix; built automatically from the bowtie2 host index on first use if missing |
+| `--host_contig_max_pct` | `50` | Remove a contig when at least this % of its length is covered by host BLAST hits |
+| `--host_contig_min_identity` | `90` | Minimum identity (%) of host BLAST hits counted towards that coverage |
+| `--scaffold` | `true` | Combine the contigs of each taxon (or segment) into one read-polished genome per sample (runs only with `--validate`) |
+| `--genome_complete_pct` | `90` | `genome_assessment` = `complete` when at least this % of the reference is called |
+| `--genome_partial_pct` | `50` | `genome_assessment` = `partial` when at least this %; below = `fragmented` |
+| `--polish_rounds` | `2` | Read-mapping polish iterations |
+| `--polish_min_depth` | `5` | Minimum read depth to call a base; positions below become `N` |
 
 ### Overview verdict thresholds
 
@@ -213,14 +224,14 @@ The thresholds above also drive the flags: `esv_flags` `low_reads` / `low_breadt
 Raw reads (R1 + R2)
        │
        ▼
- HOST_FILTER          bowtie2 --sensitive-local (paired-end mode, default)
-       │               removes human T2T + PhiX reads
-       ▼
  FASTP_TRIM           adapter auto-detection, quality/length/complexity filter
        │               poly-G/X trimming
        ▼
- FASTP_DEDUP          deduplication on already-trimmed reads
+ FASTP_DEDUP          deduplication on trimmed reads
        │               (~40–50% of trimmed reads are duplicates)
+       ▼
+ HOST_FILTER          bowtie2 --sensitive-local (paired-end mode, default)
+       │               removes human T2T + PhiX reads from trimmed, deduplicated reads
        ▼
  ESVIRITU             virus detection 
        │               produces per-sample HTML report, BAM files, detection TSVs
@@ -237,7 +248,17 @@ Raw reads (R1 + R2)
 
 ### Host filtering strategy
 
+Each host has two references, both set in the `host_<alias>` profile in `nextflow.config`: a bowtie2 index (`--host_index`, read-level `HOST_FILTER`) and a BLAST database (`--host_blastdb`, contig-level `FILTER_HOST_CONTIGS` in the validation sub-workflow).
+
+The BLAST database does not have to be built by hand. If no database exists at `--host_blastdb` when a `--validate` run starts, the pipeline reconstructs the host sequences from the bowtie2 index (`EXTRACT_HOST_FASTA`, `bowtie2-inspect`) and builds the database there (`MAKE_HOST_BLASTDB`, `makeblastdb`, written via `storeDir`). Later runs find it and skip the build. The user running the pipeline needs write access to that directory. To build it manually instead:
+
+```bash
+makeblastdb -in host_ref.fasta -dbtype nucl -out <host_dir>/blastdb/host_ref
+```
+
 By default, bowtie2 is run in **paired-end mode** with `--sensitive-local --no-discordant --no-mixed`. Unmapped pairs are written directly via `--un-conc-gz`, producing synchronised R1/R2 output in a single pass.
+
+Read order is `FASTP_TRIM` → `FASTP_DEDUP` → `HOST_FILTER`. Deduplicating before host filtering means bowtie2, the most compute-intensive pre-processing step, aligns fewer reads. Host filtering runs **after** trimming for a correctness reason: on untrimmed short-insert libraries (e.g. 2×301 bp reads from ~140 bp fragments) both mates read into adapter; in local mode their soft-clipped alignments extend past each other ("dovetail"), which bowtie2 does not count as concordant, so such human pairs were kept as non-host. In one test sample, re-filtering the old host-filtered reads with dovetailing allowed removed a further 78% as human. Trimming first removes the adapter read-through.
 
 To enable the original high-sensitivity mode (independently filtering R1 and R2 with `--very-sensitive-local`, then re-synchronising with `seqkit pair`), pass `--sensitive_host_filter true` to Nextflow or use `--sensitive-filter` in the wrapper script. This is slower but retains reads where only one mate maps to host.
 
@@ -273,9 +294,16 @@ results/
         ├── <sample>_validation_contigs.pdf    # Contig alignment plot (multi-page PDF)
         └── <sample>/
             ├── <sample>_validation_summary.tsv  # All BLAST hits for the sample
-            ├── assembly/        # SPAdes query FASTA per species
+            ├── assembly/        # SPAdes contigs, host-filtered contigs (*_query.nohost.fasta),
+            │                    # host contig report (*_host_contigs.tsv) and raw host BLAST hits
             ├── blast/           # Per-species BLAST TSVs + ref_lengths + has_contigs
-            └── reads/           # Per-species R1/R2 FASTQs extracted for assembly
+            ├── reads/           # Per-species R1/R2 FASTQs extracted for assembly
+            └── genomes/         # (--scaffold) combined, read-polished genomes
+                ├── <sample>_<taxon>[__seg<label>].fasta   # one per virus (segment)
+                ├── <sample>_genomes.fasta                  # all genomes of the sample
+                ├── <sample>_genome_stats.tsv               # statistics per genome
+                └── <sample>_scaffold_contigs.tsv           # which contigs were used
+        genome_summary.tsv       # (--scaffold) statistics of all genomes in the run
 ```
 
 ---
@@ -311,11 +339,25 @@ All BLAST hits across all species for the sample. Columns:
 | `Bit_Score` | BLAST bit score |
 | `Cov_%` | Query coverage percentage |
 
+### `validation/<sample>/genomes/` and `validation/genome_summary.tsv`
+
+Polished genomes are in `validation/<sample>/genomes/<sample>_<group_id>.fasta` (one per virus, or per segment), with headers `<sample>|<taxon>|<segment>|<reference>`; `<sample>_genomes.fasta` holds all of them. `<sample>_genome_stats.tsv` (all samples combined in `validation/genome_summary.tsv`) has one row per genome:
+
+| Column | Description |
+|---|---|
+| `sample`, `safe_taxon`, `segment`, `group_id` | Group identity; `segment` is empty for non-segmented viruses |
+| `ref_accession`, `ref_length` | Reference the contigs were ordered against |
+| `n_contigs` / `n_contigs_used` | Contigs in the group / contigs minimap2 aligned to the reference |
+| `contig_bp`, `contig_cov_pct` | Reference bases covered by contigs, and as % of the reference |
+| `genome_len`, `n_count`, `N_pct` | Final polished genome length, `N` count and `N` % |
+| `ref_cov_pct` | Called (non-`N`) bases as % of the reference length, capped at 100 |
+| `mean_depth` | Mean read depth over the genome's called positions (depth ≥ `--polish_min_depth`) in the final polish round |
+
 ---
 
 ## 10. Validation Sub-workflow
 
-Enable with `--validate`. The current sub-workflow runs once per sample on the deduplicated read pair produced by `FASTP_DEDUP`.
+Enable with `--validate`. The current sub-workflow runs once per sample on the trimmed, deduplicated, host-filtered read pair produced by `HOST_FILTER`.
 
 ### Step-by-step
 
@@ -323,9 +365,20 @@ Enable with `--validate`. The current sub-workflow runs once per sample on the d
 
    > **Note on assembly failures**: metaSPAdes requires successful insert-size estimation, which depends on FR-oriented read pairs with insert sizes larger than the reads themselves. For virus groups where the template fragments are very short (insert size ≈ read length), R1/R2 pairs may overlap completely, preventing insert-size estimation and resulting in 0 assembled contigs. This is a library preparation characteristic, not a pipeline bug. The `assembly_status` column will report `no_contigs_assembled` in this case.
 
-2. **BLAST validation** (`BLASTN_VALIDATE`): the assembled contigs are BLASTed against the full EsViritu `.fna` file. Each contig is assigned exclusively to the database taxon with the highest total BLAST bitscore. Results use E-value ≤ 1×10⁻⁵.
+   **Host contig filter** (`FILTER_HOST_CONTIGS`, `--host_contig_filter`, on by default): removes human rRNA that assembles into contigs. Reads from the multi-copy rRNA arrays can pass `HOST_FILTER` because their mates align to different repeat copies, so the pair is never concordant. Their contigs BLAST-hit viral references whose GenBank records carry human rRNA at their ends (e.g. OL738674.1, KJ716849.1), giving recurring `artefact_suspected` rows. The contigs are searched with megablast against the host BLAST database (`--host_blastdb`); a contig is removed when host hits with ≥ `--host_contig_min_identity` % identity cover ≥ `--host_contig_max_pct` % of its length. The kept contigs (`<sample>_query.nohost.fasta`) go to BLAST and scaffolding; `<sample>_host_contigs.tsv` lists every contig with its host coverage, best host hit and whether it was removed.
+
+2. **BLAST validation** (`BLASTN_VALIDATE`): the assembled contigs are BLASTed against the full EsViritu `.fna` file with `blastn -task blastn` (11 nt seeds; the default megablast needs 28 nt exact matches and misses divergent viruses). Each contig is assigned exclusively to the database taxon with the highest total BLAST bitscore. Results use E-value ≤ 1×10⁻⁵.
+
+   **Protein-level rescue** (`--tblastx_rescue`, on by default, experimental): contigs with no blastn hit, or whose hits cover less than `--verdict_artefact_max_aln_pct` % / `--verdict_artefact_max_aln_bp` bp of the contig, are searched with `tblastx` (both sides translated in six frames) against the same database, to catch viruses too divergent for a nucleotide search. A candidate passes when its hits to the best accession (highest total bitscore) cover at least the same thresholds. All candidates with a protein hit are listed in `blast/<sample>_tblastx.tsv` (raw HSPs in `<sample>_tblastx_raw.tsv`); passing hits appear in the overview (see section 11).
 
 3. **Visualise** (`VISUALIZE_VALIDATION`): one PDF page per matched taxon showing contig coverage of the reference genome.
+
+4. **Combine contigs per taxon** (`--scaffold`, on by default). The contigs of one virus in a sample are joined into one genome against a reference, then corrected with the sample's reads:
+   - `SCAFFOLD_GROUPS` first leaves out artefact contigs: a contig is only scaffolded when its BLAST hits cover at least `--verdict_artefact_max_aln_pct` % (default 20) of its length and at least `--verdict_artefact_max_aln_bp` (default 200) bp — the same thresholds the overview uses for `artefact_suspected`. This stops long non-viral contigs (e.g. bacterial rRNA) whose only match is a short stretch at the end of a viral reference from being placed on that virus. The decision per contig is in `validation/<sample>/genomes/<sample>_scaffold_contigs.tsv`. It then groups the remaining contigs per taxon, or per segment for segmented viruses (segment labels harmonised as in the overview table; contigs on an accession without a segment label form their own `?` group). Each group's reference is the accession with the highest total BLAST bitscore in the group, so every segment of a reassortant keeps its own reference.
+   - `SCAFFOLD_MINIMAP2` aligns the contigs to the reference (`minimap2 -x map-ont -k 11 -w 5`, which aligns contigs only ~80–86% identical to their reference end to end; the assembly preset `asm20` dropped much of such contigs) and builds a contig consensus in reference coordinates with `samtools consensus`; overlapping contigs merge. Gaps and genome ends are filled with the reference (lowercase) to make a polishing template.
+   - `POLISH_SCAFFOLD` maps the sample's host-filtered reads to all templates of the sample at once (`bowtie2 --local`) and calls a new consensus (`samtools consensus`), for `--polish_rounds` rounds; rounds after the first use only the read pairs that mapped in round 1. Positions with fewer than `--polish_min_depth` reads become `N`, so every base in the final genome is supported by reads, never copied from the reference. End `N`s are trimmed.
+
+   Because the template covers the whole reference (gaps and both ends filled with reference sequence), reads can extend the genome beyond the assembled contigs wherever the sample's virus is similar enough to the reference for them to align; elsewhere the genome stays `N`. RagTag and ABACAS were tested as alternatives (October 2026): with their templates ending at the first/last contig the genomes were shorter, and RagTag placed long non-viral contigs on a virus from a short match.
 
 ### `assembly_status` values
 
@@ -382,13 +435,13 @@ Mapping evidence (EsViritu) and de novo evidence (SPAdes + BLAST) are judged sep
 
 | Column | Description |
 |---|---|
-| `raw_reads` | Total read pairs before any filtering |
-| `host_filtered_reads` | Read pairs remaining after host removal |
-| `host_removal_pct` | Percentage of raw reads removed as host |
-| `trimmed_reads` | Read pairs after quality trimming |
-| `trim_removed_pct` | Percentage of host-filtered reads removed by trimming |
-| `dedup_reads` | Read pairs after deduplication |
+| `raw_reads` | Total reads (R1 + R2) before any filtering |
+| `trimmed_reads` | Reads after quality trimming (first step) |
+| `trim_removed_pct` | Percentage of raw reads removed by trimming |
+| `dedup_reads` | Reads after deduplication |
 | `dup_rate_pct` | Percentage of trimmed reads identified as duplicates |
+| `host_filtered_reads` | Reads remaining after host removal = reads analysed by EsViritu and SPAdes |
+| `host_removal_pct` | Percentage of deduplicated reads removed as host |
 
 ### EsViritu detection
 
@@ -405,7 +458,7 @@ Mapping evidence (EsViritu) and de novo evidence (SPAdes + BLAST) are judged sep
 | `esv_breadth_pct` | Breadth of coverage: `esv_covered_bases / genome_length_bp × 100` |
 | `esv_ani` | Average nucleotide identity of aligned reads to the reference |
 | `pi` | π (nucleotide diversity): mean pairwise nucleotide differences per site |
-| `RPKMF` | Reads Per Kilobase per Million filtered reads (denominator = `dedup_reads`) |
+| `RPKMF` | Reads Per Kilobase per Million filtered reads (denominator = `host_filtered_reads`) |
 | `RPM` | Reads Per Million filtered reads |
 | `RPKMR` | Reads Per Kilobase per Million raw reads (denominator = `raw_reads`) |
 
@@ -421,6 +474,30 @@ Mapping evidence (EsViritu) and de novo evidence (SPAdes + BLAST) are judged sep
 | `best_blast_reference` | Non-segmented: accession of the reference with the highest total BLAST bit score. Segmented: best accession per segment, `segment:accession;...` (e.g. `L:KF974361.1;M:KF974359.1`). Segments may come from different assemblies (e.g. reassortants). |
 | `blast_coverage` | Reference coverage by assembled contigs. Non-segmented viruses: % of the best reference genome covered (e.g. `92.5%`). Segmented viruses: per-segment coverage, `seg<label>:<pct>%;...` (e.g. `segL:85%;segM:85%;segS:no_hit`); expected segments are those of the best-supported reference assembly, segment labels are harmonised across assemblies (`L RNA` → `L`, `RNA 2` → `2`), and `seg?` = hit to a reference without a segment annotation. `NA` when no contig was assigned |
 | `blast_identity_pct` | Nucleotide identity of the best BLAST hit |
+
+### Protein-level rescue (`--validate` with `--tblastx_rescue`, experimental)
+
+| Column | Description |
+|---|---|
+| `tblastx_n_contigs` | Contigs without nucleotide support that passed the tblastx coverage thresholds for this virus |
+| `tblastx_aa_identity_pct` | Amino-acid identity of their tblastx hits (weighted by aligned length) |
+| `tblastx_contig_aln_pct` | % of the best such contig covered by tblastx hits |
+| `tblastx_reference` | Accession with the highest total tblastx bitscore |
+
+A virus found **only** by tblastx gets its own row with `verdict = protein_hit_only` and `assembly_status = tblastx_only_detection` (a possible divergent/novel virus to review by hand); a virus already in the table gets the columns above and the flag `tblastx_hit`. `protein_hit_only` rows are not shown in the HTML report yet.
+
+### Combined genome (`--validate` with `--scaffold`)
+
+`NA` when no genome was attempted for the virus (no contig passed the scaffolding filter).
+
+| Column | Description |
+|---|---|
+| `genome_assessment` | Placed right after the verdicts. Overall called (non-`N`) bases over all segments as % of the reference length: `complete` (≥ `--genome_complete_pct`, default 90), `partial` (≥ `--genome_partial_pct`, default 50), `fragmented` (below), `no_genome` (scaffolding ran but no base was called). A segmented virus with an expected segment without any contig (`no_hit` in `blast_coverage`) is at most `partial` |
+| `genome_coverage` | Called (non-`N`) bases of the polished genome as % of the reference. Segmented viruses: per segment, `seg<label>:<pct>%;...`, `no_genome` when a segment had contigs but no genome was built |
+| `genome_N_pct` | % `N` in the polished genome (all segments together) |
+| `genome_mean_depth` | Length-weighted mean read depth |
+| `genome_len` | Total polished genome length (bp, all segments) |
+| `genome_n_contigs` | Contigs placed on the reference (all segments) |
 
 ---
 
@@ -507,8 +584,9 @@ Label-based values are capped at `--max_cpus`, `--max_memory`, and `--max_time`.
 |---|---|
 | HOST_FILTER, FASTP_TRIM, FASTP_DEDUP, COLLECT_READ_STATS, SUMMARIZE_ESV, VISUALIZE_VALIDATION, SUMMARIZE_VALIDATION | `community.wave.seqera.io/library/bowtie2_esviritu_samtools_seqkit_r-tidyverse:3ee4a52f7d6ae7d9` |
 | ESVIRITU | `esviritu_pipeline:latest` (built locally from `docker/Dockerfile`) |
-| SPLIT_VIRAL_READS, SPADES_ASSEMBLY, BLASTN_VALIDATE | `community.wave.seqera.io/library/blast_samtools_seqkit_spades:fc92dccb1ec56163` |
+| SPLIT_VIRAL_READS, SPADES_ASSEMBLY, FILTER_HOST_CONTIGS, BLASTN_VALIDATE | `community.wave.seqera.io/library/blast_samtools_seqkit_spades:fc92dccb1ec56163` |
 | SUMMARIZE_READ_STATS, MAKE_OVERVIEW_TABLE | `community.wave.seqera.io/library/r-tidyverse:2.0.0--dd61b4cbf9e28186` |
+| SCAFFOLD_GROUPS, SCAFFOLD_MINIMAP2, POLISH_SCAFFOLD | default image (`bowtie2_esviritu_samtools_seqkit_r-tidyverse`, includes minimap2 and samtools ≥ 1.16) |
 
 ---
 

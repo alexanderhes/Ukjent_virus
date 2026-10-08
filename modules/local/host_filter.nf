@@ -3,6 +3,15 @@
  *
  * Remove host (human T2T + PhiX) reads using bowtie2.
  *
+ * Runs on FASTP_DEDUP output (trimmed, deduplicated reads). Trimming must come
+ * first: on untrimmed short-insert pairs the mates read into adapter, their
+ * local alignments "dovetail" and bowtie2 does not count them as concordant,
+ * so they would pass as non-host. Deduplicating first means bowtie2 aligns
+ * fewer reads. Samples with no reads left yield empty outputs.
+ *
+ * Also writes {id}_hostfilt_count.txt: reads kept (R1 + R2), the number of
+ * reads analysed downstream (read funnel).
+ *
  * Default (sensitive_host_filter = false):
  *   Single paired-end run with --sensitive-local --no-discordant --no-mixed.
  *   Unmapped pairs are written directly via --un-conc-gz. Faster (3–5×) and
@@ -29,16 +38,21 @@ process HOST_FILTER {
     tuple val(meta), path("${meta.id}_hostfilt_R1.fastq.gz"),
                      path("${meta.id}_hostfilt_R2.fastq.gz"), emit: reads
     path "${meta.id}_hostfilt.log",                           emit: log
-    tuple val(meta), path("${meta.id}_raw_reads.txt"),        emit: raw_read_count
+    tuple val(meta), path("${meta.id}_hostfilt_count.txt"),   emit: read_count
 
     script:
     // Derive the bowtie2 prefix from the staged file names (e.g. host_index)
     def index = file(params.host_index).name
     if (params.sensitive_host_filter) {
         """
-        # ── Count raw reads (R1 count × 2 for paired) ───────────────────────────
-        seqkit stats -T -j ${task.cpus} ${r1} \
-            | awk 'NR==2{print \$4 * 2}' > ${meta.id}_raw_reads.txt
+        # ── No reads left after trimming: pass empty-but-valid FASTQs on ────────
+        if [ "\$(seqkit stats -T ${r1} 2>/dev/null | awk 'NR==2{print \$4+0}')" -eq 0 ]; then
+            echo "WARNING: ${meta.id} has 0 reads after trimming/dedup -- skipping HOST_FILTER" > ${meta.id}_hostfilt.log
+            printf '' | gzip > ${meta.id}_hostfilt_R1.fastq.gz
+            printf '' | gzip > ${meta.id}_hostfilt_R2.fastq.gz
+            echo 0 > ${meta.id}_hostfilt_count.txt
+            exit 0
+        fi
 
         # ── R1 — unmapped reads written directly via --un-gz ────────────────────
         bowtie2 \\
@@ -86,12 +100,20 @@ process HOST_FILTER {
             mv ${meta.id}_unfilt_R1.fastq.gz ${meta.id}_hostfilt_R1.fastq.gz
             mv ${meta.id}_unfilt_R2.fastq.gz ${meta.id}_hostfilt_R2.fastq.gz
         fi
+
+        # Reads kept (R1 + R2) for the read funnel
+        seqkit stats -T ${meta.id}_hostfilt_R1.fastq.gz | awk 'NR==2{print \$4 * 2}' > ${meta.id}_hostfilt_count.txt
         """
     } else {
         """
-        # ── Count raw reads (R1 count × 2 for paired) ───────────────────────────
-        seqkit stats -T -j ${task.cpus} ${r1} \
-            | awk 'NR==2{print \$4 * 2}' > ${meta.id}_raw_reads.txt
+        # ── No reads left after trimming: pass empty-but-valid FASTQs on ────────
+        if [ "\$(seqkit stats -T ${r1} 2>/dev/null | awk 'NR==2{print \$4+0}')" -eq 0 ]; then
+            echo "WARNING: ${meta.id} has 0 reads after trimming/dedup -- skipping HOST_FILTER" > ${meta.id}_hostfilt.log
+            printf '' | gzip > ${meta.id}_hostfilt_R1.fastq.gz
+            printf '' | gzip > ${meta.id}_hostfilt_R2.fastq.gz
+            echo 0 > ${meta.id}_hostfilt_count.txt
+            exit 0
+        fi
 
         # ── Single paired-end run; unmapped pairs written via --un-conc-gz ──────
         # --no-discordant and --no-mixed prevent bowtie2 from attempting solo-read
@@ -123,6 +145,9 @@ process HOST_FILTER {
             printf '' | gzip > ${meta.id}_hostfilt_R1.fastq.gz
             printf '' | gzip > ${meta.id}_hostfilt_R2.fastq.gz
         fi
+
+        # Reads kept (R1 + R2) for the read funnel
+        seqkit stats -T ${meta.id}_hostfilt_R1.fastq.gz | awk 'NR==2{print \$4 * 2}' > ${meta.id}_hostfilt_count.txt
         """
     }
 }

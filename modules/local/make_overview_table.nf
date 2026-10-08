@@ -5,7 +5,7 @@
  * three sections for each detected virus (one row per assembly-set):
  *
  *   Part 1 — Read funnel:
- *     raw_reads → host_filtered_reads → trimmed_reads → dedup_reads,
+ *     raw_reads → trimmed_reads → dedup_reads → host_filtered_reads,
  *     with percentage removal at each step.
  *
  *   Part 2 — EsViritu results:
@@ -16,6 +16,18 @@
  *     assembly_status, n_contigs, longest_contig_bp,
  *     blast_coverage (single % for non-segmented, per-segment string for segmented),
  *     blast_identity_pct.
+ *
+ *   Part 3b — Combined genome (NA unless --validate and --scaffold):
+ *     genome_ref_cov_pct, genome_N_pct, genome_mean_depth, genome_len,
+ *     genome_n_contigs from POLISH_SCAFFOLD; per-segment inline strings for
+ *     segmented viruses. genome_assessment (placed after the verdicts):
+ *     complete / partial / fragmented / no_genome, from overall coverage and
+ *     params.genome_complete_pct / genome_partial_pct.
+ *
+ *   Part 3c — Protein-level rescue (experimental, params.tblastx_rescue):
+ *     tblastx_n_contigs, tblastx_aa_identity_pct, tblastx_contig_aln_pct,
+ *     tblastx_reference from passing *_tblastx.tsv hits. Taxa found only this
+ *     way get their own row with verdict protein_hit_only.
  *
  *   Part 4 — Verdict (verdict_* params):
  *     esv_verdict (mapping evidence), blast_verdict (de novo + BLAST evidence,
@@ -48,7 +60,9 @@ process MAKE_OVERVIEW_TABLE {
     path(validation_tsvs)       // collected validation summary TSVs, or a dummy file when --validate is off
     path(has_contigs_files)     // per-species has_contigs.txt markers from BLASTN_VALIDATE, or dummy
     path(ref_lengths_files)     // per-species reference sequence length TSVs from BLASTN_VALIDATE, or dummy
-    path(db_metadata_tsv)       // staged EsViritu DB metadata TSV for BLAST-only taxonomy enrichment
+    path(scaffold_stats_files)  // per-sample *_genome_stats.tsv from POLISH_SCAFFOLD, or [] when not run
+    path(tblastx_files)         // per-sample *_tblastx.tsv from BLASTN_VALIDATE, or [] when not run
+    path(db_metadata_tsv)      // staged EsViritu DB metadata TSV for BLAST-only taxonomy enrichment
     val(run_validate)
     val(validate_min_reads)
     val(assembly_taxon_level)
@@ -64,7 +78,8 @@ process MAKE_OVERVIEW_TABLE {
         ${params.verdict_contig_min_aln_bp} ${params.verdict_contig_min_aln_pct} \
         ${params.verdict_artefact_max_aln_bp} ${params.verdict_artefact_max_aln_pct} \
         ${params.verdict_esv_divergent_identity_pct} ${params.verdict_blast_divergent_identity_pct} \
-        ${params.verdict_recurrent_min_samples}
+        ${params.verdict_recurrent_min_samples} \
+        ${params.genome_complete_pct} ${params.genome_partial_pct}
     """
 }
 

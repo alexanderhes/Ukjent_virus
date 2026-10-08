@@ -28,6 +28,18 @@
 
 New database or host aliases need both a `db_<alias>` / `host_<alias>` profile in
 `nextflow.config` and an entry in `VALID_DB_ALIASES` / `VALID_HOST_ALIASES` in `NGS_wrapper.sh`.
+A host alias needs a bowtie2 index (`host_index`) and a BLAST database path (`host_blastdb`,
+used to remove human-rRNA contigs before validation BLAST). The BLAST database is built
+automatically from the bowtie2 index on the first run if it does not exist; see
+`manual.md`, section "Host filtering strategy".
+
+### Combined genomes
+The wrapper always runs assembly validation. After BLAST, the contigs of each virus
+(per segment for segmented viruses) are joined against their best reference and
+polished with the sample's reads (minimap2 + samtools consensus), giving one genome
+per sample and virus in `validation/<sample>/genomes/` (also all together in
+`<sample>_genomes.fasta`). The overview column `genome_assessment` rates each genome
+(complete / partial / fragmented). See `manual.md` (section 10).
 
 ## Examples
 

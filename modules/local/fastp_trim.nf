@@ -1,7 +1,9 @@
 /*
  * FASTP_TRIM
  *
- * Pass 1 — quality trimming only (NO deduplication).
+ * Pass 1 — quality trimming only (NO deduplication). First step of the
+ * pipeline (trim -> dedup -> host filter): runs on raw reads so that host
+ * pairs are judged on adapter-free reads.
  * Adapter auto-detection, quality filtering, length filtering,
  * low-complexity filtering, and poly-G/X trimming.
  *

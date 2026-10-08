@@ -14,6 +14,18 @@
  *      - {id}_ref_lengths.tsv : length and raw segment label of reference sequences
  *                               retained in final hits (Accession, Length, Segment)
  *      - {id}_has_contigs.txt : sample assembly sentinel plus one row per BLAST taxon
+ *   7. (params.tblastx_rescue) Protein-level rescue: contigs without nucleotide
+ *      support -- no blastn hit, or hits covering < verdict_artefact_max_aln_pct %
+ *      or < verdict_artefact_max_aln_bp bp of the contig -- are searched with
+ *      tblastx (6-frame translated) against the same DB, to catch divergent
+ *      viruses whose DNA is too different for blastn. Each candidate is assigned
+ *      to the accession with the highest total tblastx bitscore; it passes when
+ *      those hits cover >= the same thresholds of the contig.
+ *      - {id}_tblastx.tsv     : one row per candidate with a protein hit
+ *      - {id}_tblastx_raw.tsv : raw tblastx HSPs
+ *
+ * blastn runs with -task blastn (11 nt seeds) instead of the default megablast
+ * (28 nt seeds, tuned for >= 95% identity), which misses divergent viruses.
  *
  * Output format columns (blastn.tsv):
  *   Sample  Species  Scaffold_ID  Matched_Reference  Identity_%  Align_Len
@@ -33,11 +45,15 @@ process BLASTN_VALIDATE {
 
     output:
     tuple val(meta), path("${meta.id}_blastn.tsv"),     emit: blast_results
-    path "${meta.id}_ref_lengths.tsv",                  emit: ref_lengths
+    tuple val(meta), path("${meta.id}_ref_lengths.tsv"), emit: ref_lengths
     path "${meta.id}_has_contigs.txt",                  emit: has_contigs
+    path "${meta.id}_tblastx.tsv",                      emit: tblastx
+    path "${meta.id}_tblastx_raw.tsv",                  emit: tblastx_raw
 
     script:
     def taxon_level = params.assembly_taxon_level
+    def min_pct     = params.verdict_artefact_max_aln_pct
+    def min_bp      = params.verdict_artefact_max_aln_bp
     """
     fna=\$(find -L ${db_dir} -name "*.fna"      | head -1)
     meta_tsv=\$(find -L ${db_dir} -name "*.tsv" | head -1)
@@ -71,6 +87,9 @@ process BLASTN_VALIDATE {
     echo -e "Sample\tSpecies\tScaffold_ID\tMatched_Reference\tIdentity_%\tAlign_Len\tQuery_Len\tMismatches\tGap_Opens\tQ_Start\tQ_End\tS_Start\tS_End\tE-value\tBit_Score\tCov_%" \
         > ${meta.id}_blastn.tsv
     echo -e "Accession\tLength\tSegment" > ${meta.id}_ref_lengths.tsv
+    echo -e "Sample\tSpecies\tScaffold_ID\tMatched_Reference\tAA_Identity_%\tAligned_bp\tQuery_Len\tAligned_%\tBest_E-value\tTotal_Bit_Score\tNt_support\tPassed" \
+        > ${meta.id}_tblastx.tsv
+    : > ${meta.id}_tblastx_raw.tsv
 
     # Empty query FASTA means SPAdes produced no usable contigs.
     if [ \$(grep -c "^>" ${query} 2>/dev/null || echo 0) -eq 0 ]; then
@@ -88,6 +107,7 @@ process BLASTN_VALIDATE {
 
     # Step 3: BLAST whole-sample contigs against the full DB.
     blastn \
+        -task blastn \
         -query ${query} \
         -db full_blastdb \
         -outfmt "6 qseqid sseqid pident length qlen mismatch gapopen qstart qend sstart send evalue bitscore qcovs" \
@@ -148,5 +168,87 @@ process BLASTN_VALIDATE {
         echo -e "${meta.id}\t__sample_assembly__\ttrue"
         tail -n +2 ${meta.id}_blastn.tsv | cut -f2 | sort -u | awk -v sample="${meta.id}" '{ print sample"\t"\$1"\ttrue" }'
     } > ${meta.id}_has_contigs.txt
+
+    # Step 8: Protein-level rescue (tblastx) of contigs without nucleotide support.
+    if [ "${params.tblastx_rescue}" = "true" ]; then
+        # Nucleotide support per contig: merged Q_Start..Q_End of its final hits.
+        tail -n +2 ${meta.id}_blastn.tsv \
+            | awk -F'\t' -v OFS='\t' '{ s = (\$10 < \$11) ? \$10 : \$11; e = (\$10 < \$11) ? \$11 : \$10; print \$3, s, e }' \
+            | sort -k1,1 -k2,2n \
+            | awk -F'\t' -v OFS='\t' '
+                \$1 != cur { if (cur != "") cov[cur] += e - s + 1; cur = \$1; s = \$2; e = \$3; next }
+                \$2 > e    { cov[cur] += e - s + 1; s = \$2; e = \$3; next }
+                           { if (\$3 > e) e = \$3 }
+                END        { if (cur != "") cov[cur] += e - s + 1; for (c in cov) print c, cov[c] }
+            ' > nt_support.tsv
+
+        seqkit fx2tab -n -i -l ${query} \
+            | awk -F'\t' -v OFS='\t' -v min_pct=${min_pct} -v min_bp=${min_bp} '
+                FILENAME == ARGV[1] { cov[\$1] = \$2; next }
+                {
+                    c = (\$1 in cov) ? cov[\$1] : 0
+                    if (c == 0) print \$1, "no_hit"
+                    else if (c / \$2 * 100 < min_pct || c < min_bp) print \$1, "below_threshold"
+                }
+            ' nt_support.tsv - > tblastx_candidates.tsv
+
+        if [ -s tblastx_candidates.tsv ]; then
+            cut -f1 tblastx_candidates.tsv > tblastx_candidate_ids.txt
+            seqkit grep -f tblastx_candidate_ids.txt ${query} > tblastx_candidates.fa
+            tblastx \
+                -query tblastx_candidates.fa \
+                -db full_blastdb \
+                -outfmt "6 qseqid sseqid pident length qstart qend sstart send evalue bitscore qlen" \
+                -evalue 1e-5 \
+                -max_target_seqs 5 \
+                -num_threads ${task.cpus} \
+                -out ${meta.id}_tblastx_raw.tsv
+
+            # Best accession per contig by total bitscore; coverage = merged query
+            # intervals of HSPs to that accession; identity = length-weighted.
+            awk -F'\t' -v OFS='\t' '
+                FILENAME == ARGV[1] { best_acc[\$1] = ""; next }
+                { bs[\$1 SUBSEP \$2] += \$10 }
+                END {
+                    for (k in bs) { split(k, p, SUBSEP)
+                        if (!(p[1] in top) || bs[k] > top[p[1]]) { top[p[1]] = bs[k]; acc[p[1]] = p[2] } }
+                    for (c in acc) print c, acc[c], top[c]
+                }
+            ' tblastx_candidate_ids.txt ${meta.id}_tblastx_raw.tsv > tblastx_best.tsv
+
+            awk -F'\t' -v OFS='\t' '
+                FILENAME == ARGV[1] { best[\$1] = \$2; next }
+                (\$1 in best) && best[\$1] == \$2 {
+                    s = (\$5 < \$6) ? \$5 : \$6; e = (\$5 < \$6) ? \$6 : \$5
+                    print \$1, s, e, \$3, \$4, \$9, \$11
+                }
+            ' tblastx_best.tsv ${meta.id}_tblastx_raw.tsv \
+                | sort -k1,1 -k2,2n \
+                | awk -F'\t' -v OFS='\t' '
+                    { idw[\$1] += \$4 * \$5; len[\$1] += \$5; qlen[\$1] = \$7
+                      if (!(\$1 in ev) || \$6 + 0 < ev[\$1] + 0) ev[\$1] = \$6 }
+                    \$1 != cur { if (cur != "") cov[cur] += e - s + 1; cur = \$1; s = \$2; e = \$3; next }
+                    \$2 > e    { cov[cur] += e - s + 1; s = \$2; e = \$3; next }
+                               { if (\$3 > e) e = \$3 }
+                    END { if (cur != "") cov[cur] += e - s + 1
+                          for (c in cov) print c, cov[c], qlen[c], sprintf("%.2f", idw[c] / len[c]), ev[c] }
+                ' > tblastx_cov.tsv
+
+            awk -F'\t' -v OFS='\t' -v sample="${meta.id}" -v min_pct=${min_pct} -v min_bp=${min_bp} '
+                FILENAME == ARGV[1] { taxon[\$1] = \$2; next }
+                FILENAME == ARGV[2] { status[\$1] = \$2; next }
+                FILENAME == ARGV[3] { acc[\$1] = \$2; bits[\$1] = \$3; next }
+                {
+                    c = \$1; pct = \$2 / \$3 * 100
+                    print sample, (acc[c] in taxon) ? taxon[acc[c]] : acc[c], c, acc[c], \$4, \$2, \$3,
+                          sprintf("%.1f", pct), \$5, bits[c], status[c],
+                          (pct >= min_pct && \$2 >= min_bp) ? "true" : "false"
+                }
+            ' acc_safe_taxon_full.tsv tblastx_candidates.tsv tblastx_best.tsv tblastx_cov.tsv \
+                | sort -t \$'\t' -k3,3 >> ${meta.id}_tblastx.tsv
+
+            echo "INFO: ${meta.id}: tblastx on \$(wc -l < tblastx_candidates.tsv) contigs without nucleotide support; \$(tail -n +2 ${meta.id}_tblastx.tsv | awk -F'\t' '\$12 == "true"' | wc -l) passed"
+        fi
+    fi
     """
 }
