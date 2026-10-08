@@ -320,7 +320,7 @@ Enable with `--validate`. The current sub-workflow runs once per sample on the d
 
 ### Taxonomic level for assembly (`--assembly_taxon_level`)
 
-By default (`subspecies`), reads are grouped and assembled at the finest available taxonomic resolution — using the subspecies rank when EsViritu assigns one (e.g. `hepatitis C virus genotype 1a`), falling back to species otherwise. 
+By default (`subspecies`), reads are grouped and assembled at the finest available taxonomic resolution — using the subspecies rank when EsViritu assigns one (e.g. `hepatitis C virus genotype 1a`), falling back to species otherwise. The subspecies label is prefixed with the species name (e.g. `Rotavirus alphagastroenteritidis 1`), because some subspecies labels (e.g. serotype `1`) are shared by unrelated species; labels that already contain the species name are used as they are.
 
 Use `--assembly_taxon_level species` to always group at species level.
 
@@ -352,7 +352,7 @@ The overview table (`overview/<sample>_overview.tsv`) contains 30 columns:
 
 | Column | Description |
 |---|---|
-| `virus_name` | Most informative display name (subspecies when available, otherwise species) |
+| `virus_name` | Display name: species + subspecies at `subspecies` level (e.g. `Alphainfluenzavirus influenzae H3N2`), otherwise species |
 | `family` | Viral family |
 | `genus` | Viral genus |
 | `species` | Viral species (ICTV taxonomy, prefix stripped) |
@@ -375,9 +375,9 @@ The overview table (`overview/<sample>_overview.tsv`) contains 30 columns:
 | `assembly_status` | See [Section 10](#assembly_status-values) |
 | `n_contigs` | Number of assembled contigs with BLAST hits |
 | `longest_contig_bp` | Length of the longest assembled contig |
-| `best_blast_reference` | Accession of the reference with the highest total BLAST bit score |
+| `best_blast_reference` | Non-segmented: accession of the reference with the highest total BLAST bit score. Segmented: best accession per segment, `segment:accession;...` (e.g. `L:KF974361.1;M:KF974359.1`). Segments may come from different assemblies (e.g. reassortants). |
 | `blast_genome_cov_pct` | Fraction of the best reference genome covered by assembled contigs |
-| `blast_segment_coverage` | For segmented viruses: comma-separated list of `segment:contig_count` (e.g. `VP1:2,VP2:1`); `NA` for non-segmented viruses |
+| `blast_segment_coverage` | For segmented viruses: per-segment reference coverage, `seg<label>:<pct>%;...` (e.g. `segL:85%;segM:85%;segS:no_hit`). Expected segments are those of the best-supported reference assembly; segment labels are harmonised across assemblies (`L RNA` → `L`, `RNA 2` → `2`). `seg?` = hit to a reference without a segment annotation. `NA` for non-segmented viruses |
 | `blast_identity_pct` | Nucleotide identity of the best BLAST hit |
 
 ---

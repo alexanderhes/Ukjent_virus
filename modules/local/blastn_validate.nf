@@ -11,7 +11,8 @@
  *   5. Maps the winning accession to taxonomy using the metadata TSV.
  *   6. Writes per-sample output files compatible with the downstream R scripts:
  *      - {id}_blastn.tsv      : hits with Sample and Species (safe_taxon) columns
- *      - {id}_ref_lengths.tsv : lengths of reference sequences retained in final hits
+ *      - {id}_ref_lengths.tsv : length and raw segment label of reference sequences
+ *                               retained in final hits (Accession, Length, Segment)
  *      - {id}_has_contigs.txt : sample assembly sentinel plus one row per BLAST taxon
  *
  * Output format columns (blastn.tsv):
@@ -42,16 +43,26 @@ process BLASTN_VALIDATE {
     meta_tsv=\$(find -L ${db_dir} -name "*.tsv" | head -1)
 
     # Step 1: Build full accession -> safe_taxon lookup from the metadata TSV.
+    # At subspecies level the label is "species subspecies", because bare
+    # subspecies labels (e.g. serotype "1") are shared across unrelated species.
+    # Must stay in sync with pick_taxon_label() in bin/make_overview_table.R.
+    # Also writes accession -> raw segment label (empty when not segmented).
     awk -F'\t' -v level="${taxon_level}" '
         BEGIN { OFS="\t" }
         NR==1 { next }
         {
             acc        = \$1
+            segment    = \$4
             species    = \$11
             subspecies = \$12
-            taxon = (level == "subspecies" && subspecies != "" && subspecies != "NA") \
-                    ? subspecies : species
-            sub(/^[st]__/, "", taxon)
+            gsub(/"/, "", segment)
+            if (segment == "NA") segment = ""
+            print acc, segment > "acc_segment.tsv"
+            sub(/^[a-z]__/, "", species)
+            sub(/^[a-z]__/, "", subspecies)
+            taxon = species
+            if (level == "subspecies" && subspecies != "" && subspecies != "NA")
+                taxon = (species != "" && index(subspecies, species)) ? subspecies : species " " subspecies
             gsub(/[^A-Za-z0-9._-]/, "_", taxon)
             if (taxon != "") print acc, taxon
         }
@@ -59,7 +70,7 @@ process BLASTN_VALIDATE {
 
     echo -e "Sample\tSpecies\tScaffold_ID\tMatched_Reference\tIdentity_%\tAlign_Len\tQuery_Len\tMismatches\tGap_Opens\tQ_Start\tQ_End\tS_Start\tS_End\tE-value\tBit_Score\tCov_%" \
         > ${meta.id}_blastn.tsv
-    echo -e "Accession\tLength" > ${meta.id}_ref_lengths.tsv
+    echo -e "Accession\tLength\tSegment" > ${meta.id}_ref_lengths.tsv
 
     # Empty query FASTA means SPAdes produced no usable contigs.
     if [ \$(grep -c "^>" ${query} 2>/dev/null || echo 0) -eq 0 ]; then
@@ -117,7 +128,7 @@ process BLASTN_VALIDATE {
         }
     ' contig_best_accessions.tsv acc_safe_taxon_full.tsv blast_raw.tsv >> ${meta.id}_blastn.tsv
 
-    # Step 6: Capture reference lengths for accessions retained in final hits.
+    # Step 6: Capture reference lengths and segment labels for accessions retained in final hits.
     tail -n +2 ${meta.id}_blastn.tsv | cut -f4 | sort -u > ref_accessions.txt
 
     if [ -s ref_accessions.txt ]; then
@@ -125,7 +136,11 @@ process BLASTN_VALIDATE {
         awk '/^>/{if(len>0) print name"\t"len; name=substr(\$0,2); gsub(/ .*/,"",name); len=0} \
              !/^>/{len+=length(\$0)} \
              END{if(len>0) print name"\t"len}' \
-            species_refs.fasta >> ${meta.id}_ref_lengths.tsv
+            species_refs.fasta \
+        | awk -F'\t' 'BEGIN { OFS="\t" } \
+                      FNR==NR { seg[\$1]=\$2; next } \
+                      { print \$1, \$2, ((\$1 in seg) ? seg[\$1] : "") }' \
+            acc_segment.tsv - >> ${meta.id}_ref_lengths.tsv
     fi
 
     # Step 7: Write sample-level assembly status plus BLAST-assigned taxa.
