@@ -17,6 +17,11 @@
 #     blast_genome_cov_pct (non-segmented) or blast_segment_coverage
 #     (per-segment inline string "seg1:X%;seg2:no_hit;..."),
 #     blast_identity_pct.
+#     For segmented viruses each segment uses its own best-matching accession
+#     (segments may come from different assemblies, e.g. reassortants), listed
+#     in best_blast_reference as "seg:accession;...". The expected segment set
+#     is that of the best-supported assembly; segment labels are normalised
+#     across assemblies, and accessions without a segment label appear as "seg?".
 #
 # Params are passed as command-line arguments by the Nextflow process:
 #   make_overview_table.R <run_validate> <validate_min_reads> <assembly_taxon_level>
@@ -48,10 +53,42 @@ strip_prefix <- function(x) sub("^[a-z]__", "", as.character(x))
 
 to_safe <- function(x) gsub("[^A-Za-z0-9._-]", "_", x)
 
+# At subspecies level the label is "species subspecies": bare subspecies labels
+# (e.g. serotype "1") are shared across unrelated species in the DB. Subspecies
+# labels that already contain the species name are used as they are.
+# Must stay in sync with the Step 1 awk in modules/local/blastn_validate.nf.
 pick_taxon_label <- function(species, subspecies, taxon_level) {
   use_ssp <- taxon_level == "subspecies" &
     !is.na(subspecies) & nzchar(subspecies) & subspecies != "NA"
-  ifelse(use_ssp, subspecies, species)
+  ok <- !is.na(species) & nzchar(species) & !is.na(subspecies)
+  has_species <- ok &
+    str_detect(coalesce(subspecies, ""), fixed(ifelse(ok, species, "\u0001")))
+  ifelse(use_ssp, ifelse(has_species, subspecies, paste(species, subspecies)),
+         species)
+}
+
+# Harmonise segment labels that differ between assemblies of the same virus,
+# e.g. "L RNA" / "L; large" / "Large" -> "L", "RNA 2" / "Seg 2" -> "2",
+# "unknown 1" -> "unknown1". Unrecognised labels are returned trimmed;
+# missing labels become NA.
+normalize_segment <- function(x) {
+  x <- trimws(gsub('"', "", as.character(x)))
+  lx <- tolower(x)
+  size <- str_match(
+    lx,
+    "^(?:segment[ -]?)?([lms]|large|medium|middle|small)(?:[ ;-]+(?:rna|segment|large|medium|middle|small))?$"
+  )[, 2]
+  unknown_num <- str_match(lx, "^unknown ?([0-9]+)$")[, 2]
+  num <- str_match(lx, "\\b(?:rna|seg|segment)[ _-]?([0-9]+)\\b")[, 2]
+  case_when(
+    is.na(x) | !nzchar(x) | lx == "na"        ~ NA_character_,
+    size %in% c("l", "large")                 ~ "L",
+    size %in% c("m", "medium", "middle")      ~ "M",
+    size %in% c("s", "small")                 ~ "S",
+    !is.na(unknown_num)                       ~ paste0("unknown", unknown_num),
+    !is.na(num)                               ~ num,
+    TRUE                                      ~ x
+  )
 }
 
 first_non_missing <- function(x) {
@@ -145,14 +182,42 @@ taxon_meta <- db_meta_acc %>%
     .groups = "drop"
   )
 
+# One row per accession of every segmented taxon, including accessions whose
+# Segment field is empty (GenBank records missing the annotation). Their label
+# is taken from the description when it names a segment the taxon already uses
+# (e.g. "... segment RNA2"), otherwise "?", so their BLAST hits are kept.
 seg_map <- db_meta_acc %>%
-  filter(is_segmented) %>%
+  semi_join(taxon_meta %>% filter(is_segmented), by = "safe_taxon") %>%
   transmute(
     safe_taxon,
     acc = trimws(Accession),
-    seg = trimws(segment_clean)
+    asm = Assembly,
+    seg_label = normalize_segment(segment_clean),
+    seg_desc = normalize_segment(description)
   ) %>%
+  group_by(safe_taxon) %>%
+  mutate(
+    seg = coalesce(
+      seg_label,
+      if_else(seg_desc %in% seg_label, seg_desc, NA_character_),
+      "?"
+    )
+  ) %>%
+  ungroup() %>%
+  select(safe_taxon, acc, asm, seg) %>%
   distinct()
+
+# Segment display order: numbered segments, then L/M/S, then other labels, "?" last.
+arrange_segments <- function(df, ...) {
+  df %>%
+    mutate(
+      .seg_num = suppressWarnings(as.integer(seg)),
+      .seg_size = match(seg, c("L", "M", "S"))
+    ) %>%
+    arrange(..., seg == "?", is.na(.seg_num), .seg_num,
+            is.na(.seg_size), .seg_size, seg) %>%
+    select(-.seg_num, -.seg_size)
+}
 
 # ── Part 1: Read funnel ───────────────────────────────────────────────────────
 read_stats <- read_tsv(read_stats_file, col_types = cols(.default = "c"),
@@ -335,7 +400,7 @@ if (run_validate) {
                      select(sample_ID, safe_taxon, seg, Matched_Reference),
                    by = c("sample_ID", "safe_taxon", "seg", "Matched_Reference")) %>%
         left_join(ref_len_map, by = c("Matched_Reference" = "Accession")) %>%
-        group_by(sample_ID, safe_taxon, seg, Length) %>%
+        group_by(sample_ID, safe_taxon, seg, Matched_Reference, Length) %>%
         summarise(cov_bases = union_covered(S_Start, S_End), .groups = "drop") %>%
         mutate(
           cov_pct = ifelse(!is.na(Length) & Length > 0,
@@ -343,20 +408,48 @@ if (run_validate) {
                            NA_real_)
         )
 
-      seg_cov_str <- seg_map %>%
-        distinct(safe_taxon, seg) %>%
-        tidyr::crossing(sample_ID = unique(blast_seg$sample_ID)) %>%
-        left_join(cov_per_seg %>% select(sample_ID, safe_taxon, seg, cov_pct),
-                  by = c("sample_ID", "safe_taxon", "seg")) %>%
-        mutate(
-          seg_num = suppressWarnings(as.integer(seg)),
-          cov_str = ifelse(is.na(cov_pct), "no_hit", paste0(round(cov_pct, 0), "%")),
-          seg_str = paste0("seg", seg, ":", cov_str)
-        ) %>%
-        arrange(sample_ID, safe_taxon, is.na(seg_num), seg_num, seg) %>%
+      # Expected segments come from the anchor assembly: the one with the most
+      # BLAST support in this sample, preferring assemblies with labelled
+      # segments. Segments may still be covered by accessions from other
+      # assemblies (reassortants); hit segments the anchor lacks are appended.
+      asm_has_labels <- seg_map %>%
+        group_by(safe_taxon, asm) %>%
+        summarise(has_labels = any(seg != "?"), .groups = "drop")
+
+      expected_segs <- blast_seg %>%
+        group_by(sample_ID, safe_taxon, asm) %>%
+        summarise(total_bs = sum(Bit_Score, na.rm = TRUE), .groups = "drop") %>%
+        left_join(asm_has_labels, by = c("safe_taxon", "asm")) %>%
         group_by(sample_ID, safe_taxon) %>%
-        summarise(blast_segment_coverage = paste(seg_str, collapse = ";"),
-                  .groups = "drop")
+        arrange(desc(has_labels), desc(total_bs), .by_group = TRUE) %>%
+        slice(1) %>%
+        ungroup() %>%
+        inner_join(seg_map %>% distinct(safe_taxon, asm, seg),
+                   by = c("safe_taxon", "asm")) %>%
+        distinct(sample_ID, safe_taxon, seg) %>%
+        mutate(expected = TRUE)
+
+      seg_summary <- cov_per_seg %>%
+        select(sample_ID, safe_taxon, seg, Matched_Reference, cov_pct) %>%
+        full_join(expected_segs, by = c("sample_ID", "safe_taxon", "seg")) %>%
+        mutate(
+          expected = coalesce(expected, FALSE),
+          cov_str = case_when(
+            is.na(Matched_Reference) ~ "no_hit",
+            is.na(cov_pct)           ~ "hit",
+            TRUE                     ~ paste0(round(cov_pct, 0), "%")
+          ),
+          seg_str = paste0("seg", seg, ":", cov_str),
+          ref_str = ifelse(is.na(Matched_Reference), NA_character_,
+                           paste0(seg, ":", Matched_Reference))
+        ) %>%
+        arrange_segments(sample_ID, safe_taxon, !expected) %>%
+        group_by(sample_ID, safe_taxon) %>%
+        summarise(
+          blast_segment_coverage = paste(seg_str, collapse = ";"),
+          best_blast_reference = paste(na.omit(ref_str), collapse = ";"),
+          .groups = "drop"
+        )
 
       blast_seg %>%
         group_by(sample_ID, safe_taxon) %>%
@@ -366,11 +459,8 @@ if (run_validate) {
           blast_identity_pct = weighted_identity(identity_pct, Align_Len),
           .groups = "drop"
         ) %>%
-        left_join(seg_cov_str, by = c("sample_ID", "safe_taxon")) %>%
-        mutate(
-          best_blast_reference = NA_character_,
-          blast_genome_cov_pct = NA_real_
-        )
+        left_join(seg_summary, by = c("sample_ID", "safe_taxon")) %>%
+        mutate(blast_genome_cov_pct = NA_real_)
     } else {
       blast_empty
     }
