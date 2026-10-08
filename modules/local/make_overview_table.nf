@@ -14,8 +14,13 @@
  *
  *   Part 3 — Assembly + BLAST validation (NA when --validate not used):
  *     assembly_status, n_contigs, longest_contig_bp,
- *     blast_genome_cov_pct (non-segmented) or per-segment coverage string,
+ *     blast_coverage (single % for non-segmented, per-segment string for segmented),
  *     blast_identity_pct.
+ *
+ *   Part 4 — Verdict (verdict_* params):
+ *     esv_verdict (mapping evidence), blast_verdict (de novo + BLAST evidence,
+ *     from contig_aln_bp / contig_aln_pct), combined verdict, and flags
+ *     (general, esv_flags, blast_flags).
  *
  * The R logic lives in bin/make_overview_table.R; scalar params are passed
  * as command-line arguments using Rscript's trailingOnly mechanism.
@@ -54,7 +59,12 @@ process MAKE_OVERVIEW_TABLE {
 
     script:
     """
-    make_overview_table.R ${run_validate} ${validate_min_reads} ${assembly_taxon_level}
+    make_overview_table.R ${run_validate} ${validate_min_reads} ${assembly_taxon_level} \
+        ${params.verdict_esv_min_reads} ${params.verdict_esv_min_breadth_pct} \
+        ${params.verdict_contig_min_aln_bp} ${params.verdict_contig_min_aln_pct} \
+        ${params.verdict_artefact_max_aln_bp} ${params.verdict_artefact_max_aln_pct} \
+        ${params.verdict_esv_divergent_identity_pct} ${params.verdict_blast_divergent_identity_pct} \
+        ${params.verdict_recurrent_min_samples}
     """
 }
 

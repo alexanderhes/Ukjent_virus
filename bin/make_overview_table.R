@@ -14,8 +14,9 @@
 #
 #   Part 3 - Assembly + BLAST validation (NA when --validate not used):
 #     assembly_status, n_contigs, longest_contig_bp,
-#     blast_genome_cov_pct (non-segmented) or blast_segment_coverage
-#     (per-segment inline string "seg1:X%;seg2:no_hit;..."),
+#     blast_coverage: reference coverage by contigs, "<pct>%" for
+#     non-segmented viruses or a per-segment inline string
+#     "seg1:X%;seg2:no_hit;..." for segmented ones,
 #     blast_identity_pct.
 #     For segmented viruses each segment uses its own best-matching accession
 #     (segments may come from different assemblies, e.g. reassortants), listed
@@ -23,8 +24,30 @@
 #     is that of the best-supported assembly; segment labels are normalised
 #     across assemblies, and accessions without a segment label appear as "seg?".
 #
+#   Part 4 - Verdict (verdicts and flags placed right after virus_name):
+#     esv_verdict   - mapping evidence (EsViritu): "supported" when read count and
+#                     breadth both pass their thresholds, else "weak"; NA for
+#                     BLAST-only rows.
+#     blast_verdict - de novo evidence (SPAdes + BLAST), judged on the contig with
+#                     the most aligned bases (contig_aln_bp / contig_aln_pct):
+#                     "confirmed", "inconclusive", "artefact_suspected" (short or
+#                     small-fraction hit inside a longer contig), "no_contig";
+#                     NA when --validate is off.
+#     verdict       - combined: confirmed (BLAST confirmed) > probable (ESV
+#                     supported) > artefact_suspected (BLAST-only artefact) > weak.
+#     flags         - general: blast_only, in_<k>/<N>_samples (taxon in at least
+#                     recurrent_min_samples samples).
+#     esv_flags     - mapping reasons: low_reads, low_breadth, divergent.
+#     blast_flags   - de novo reasons: short_alignment, low_contig_cov, divergent.
+#     Threshold flags carry the value and the threshold it failed, e.g.
+#     "low_reads(5<10)", "divergent(82.18%<90%)".
+#
 # Params are passed as command-line arguments by the Nextflow process:
 #   make_overview_table.R <run_validate> <validate_min_reads> <assembly_taxon_level>
+#     <esv_min_reads> <esv_min_breadth_pct> <contig_min_aln_bp> <contig_min_aln_pct>
+#     <artefact_max_aln_bp> <artefact_max_aln_pct>
+#     <esv_divergent_identity_pct> <blast_divergent_identity_pct>
+#     <recurrent_min_samples>
 # Input TSVs are discovered by filename pattern in the working directory.
 
 suppressPackageStartupMessages(library(tidyverse))
@@ -34,6 +57,22 @@ args                 <- commandArgs(trailingOnly = TRUE)
 run_validate         <- as.logical(args[1])
 validate_min_reads   <- as.integer(args[2])
 assembly_taxon_level <- args[3]
+esv_min_reads        <- as.numeric(args[4])
+esv_min_breadth_pct  <- as.numeric(args[5])
+contig_min_aln_bp    <- as.numeric(args[6])
+contig_min_aln_pct   <- as.numeric(args[7])
+artefact_max_aln_bp  <- as.numeric(args[8])
+artefact_max_aln_pct <- as.numeric(args[9])
+esv_divergent_identity_pct   <- as.numeric(args[10])
+blast_divergent_identity_pct <- as.numeric(args[11])
+recurrent_min_samples        <- as.numeric(args[12])
+
+if (anyNA(c(esv_min_reads, esv_min_breadth_pct, contig_min_aln_bp,
+            contig_min_aln_pct, artefact_max_aln_bp, artefact_max_aln_pct,
+            esv_divergent_identity_pct, blast_divergent_identity_pct,
+            recurrent_min_samples))) {
+  stop("Verdict thresholds (arguments 4-12) must all be numeric")
+}
 
 if (!assembly_taxon_level %in% c("species", "subspecies")) {
   stop("assembly_taxon_level must be 'species' or 'subspecies'")
@@ -146,6 +185,27 @@ union_covered <- function(starts, ends) {
     }
   }
   cov + (cur_e - cur_s + 1L)
+}
+
+# Flag raised when value < threshold, showing why: "name(value<threshold)".
+# NA value or threshold not met -> NA (flag not raised).
+flag_below <- function(name, value, threshold, unit = "") {
+  if_else(value < threshold,
+          paste0(name, "(", value, unit, "<", threshold, unit, ")"),
+          NA_character_)
+}
+
+# Join per-row flag vectors (NA = flag not raised) into "flag1;flag2"; "" if none.
+collapse_flags <- function(...) {
+  out <- character(length(..1))
+  for (flag in list(...)) {
+    out <- case_when(
+      is.na(flag)  ~ out,
+      nzchar(out)  ~ paste(out, flag, sep = ";"),
+      TRUE         ~ flag
+    )
+  }
+  out
 }
 
 # ── Shared metadata lookup from the full EsViritu DB ──────────────────────────
@@ -270,6 +330,16 @@ blast_empty <- tibble(
   blast_identity_pct = numeric()
 )
 
+# Best contig per sample x taxon: the one with the most query bases aligned to
+# its assigned reference. A short hit inside a long contig (low contig_aln_pct)
+# is the typical signature of non-viral sequence matching a viral reference.
+contig_evidence <- tibble(
+  sample_ID = character(),
+  safe_taxon = character(),
+  contig_aln_bp = integer(),
+  contig_aln_pct = numeric()
+)
+
 if (run_validate) {
   val_files <- list.files(".", pattern = "_blastn\\.tsv$", full.names = TRUE)
 
@@ -315,6 +385,19 @@ if (run_validate) {
     distinct()
 
   if (nrow(blast_raw) > 0) {
+    contig_evidence <- blast_raw %>%
+      group_by(sample_ID, safe_taxon, Scaffold_ID) %>%
+      summarise(
+        contig_aln_bp = union_covered(Q_Start, Q_End),
+        query_len = first(Query_Len),
+        .groups = "drop"
+      ) %>%
+      mutate(contig_aln_pct = round(contig_aln_bp / query_len * 100, 1)) %>%
+      group_by(sample_ID, safe_taxon) %>%
+      slice_max(contig_aln_bp, n = 1, with_ties = FALSE) %>%
+      ungroup() %>%
+      select(sample_ID, safe_taxon, contig_aln_bp, contig_aln_pct)
+
     rl_files <- list.files(".", pattern = "_ref_lengths\\.tsv$", full.names = TRUE)
     extra_lens <- if (length(rl_files) > 0) {
       map_dfr(rl_files, function(f) {
@@ -532,6 +615,7 @@ overview <- asm %>%
     sample_ID,
     raw_reads, host_filtered_reads, host_removal_pct,
     trimmed_reads, trim_removed_pct, dedup_reads, dup_rate_pct,
+    safe_taxon,
     virus_name, family, genus, species, subspecies = subspecies_col,
     esv_accession = Accession,
     genome_length_bp = Asm_length,
@@ -563,6 +647,7 @@ if (run_validate && nrow(blast_stats) > 0) {
       sample_ID,
       raw_reads, host_filtered_reads, host_removal_pct,
       trimmed_reads, trim_removed_pct, dedup_reads, dup_rate_pct,
+      safe_taxon,
       virus_name = coalesce(virus_name, gsub("_", " ", safe_taxon)),
       family, genus, species, subspecies = subspecies_meta,
       esv_accession = NA_character_,
@@ -583,6 +668,85 @@ if (run_validate && nrow(blast_stats) > 0) {
 }
 
 overview <- bind_rows(overview, blast_only_rows)
+
+# ── Part 4: Verdict ───────────────────────────────────────────────────────────
+n_batch_samples <- n_distinct(read_stats$sample_ID)
+
+overview <- overview %>%
+  left_join(contig_evidence, by = c("sample_ID", "safe_taxon")) %>%
+  group_by(safe_taxon) %>%
+  mutate(n_samples_with_taxon = n_distinct(sample_ID)) %>%
+  ungroup() %>%
+  mutate(
+    esv_verdict = case_when(
+      is.na(esv_read_count)                       ~ NA_character_,
+      esv_read_count >= esv_min_reads &
+        esv_breadth_pct >= esv_min_breadth_pct    ~ "supported",
+      TRUE                                        ~ "weak"
+    ),
+    blast_verdict = case_when(
+      !run_validate                               ~ NA_character_,
+      is.na(contig_aln_bp)                        ~ "no_contig",
+      contig_aln_bp >= contig_min_aln_bp &
+        contig_aln_pct >= contig_min_aln_pct      ~ "confirmed",
+      contig_aln_bp < artefact_max_aln_bp |
+        contig_aln_pct < artefact_max_aln_pct     ~ "artefact_suspected",
+      TRUE                                        ~ "inconclusive"
+    ),
+    # One coverage column: "<pct>%" for non-segmented viruses, the per-segment
+    # string ("segL:14%;segM:66%;segS:no_hit") for segmented ones.
+    blast_coverage = coalesce(
+      blast_segment_coverage,
+      if_else(is.na(blast_genome_cov_pct), NA_character_,
+              paste0(blast_genome_cov_pct, "%"))
+    ),
+    verdict = case_when(
+      blast_verdict %in% "confirmed"              ~ "confirmed",
+      esv_verdict %in% "supported"                ~ "probable",
+      is.na(esv_verdict) &
+        blast_verdict %in% "artefact_suspected"   ~ "artefact_suspected",
+      TRUE                                        ~ "weak"
+    ),
+    flags = collapse_flags(
+      if_else(is.na(esv_read_count), "blast_only", NA_character_),
+      if_else(n_samples_with_taxon >= recurrent_min_samples,
+              paste0("in_", n_samples_with_taxon, "/", n_batch_samples, "_samples"),
+              NA_character_)
+    ),
+    esv_flags = collapse_flags(
+      flag_below("low_reads", esv_read_count, esv_min_reads),
+      flag_below("low_breadth", esv_breadth_pct, esv_min_breadth_pct, "%"),
+      flag_below("divergent", round(esv_ani * 100, 2),
+                 esv_divergent_identity_pct, "%")
+    ),
+    blast_flags = collapse_flags(
+      flag_below("short_alignment", contig_aln_bp, artefact_max_aln_bp, "bp"),
+      flag_below("low_contig_cov", contig_aln_pct, artefact_max_aln_pct, "%"),
+      flag_below("divergent", blast_identity_pct,
+                 blast_divergent_identity_pct, "%")
+    )
+  ) %>%
+  # Interpretation first, then one block per analysis; technical detail last,
+  # also grouped per analysis.
+  select(
+    # Findings
+    sample_ID, virus_name, verdict, esv_verdict, blast_verdict, flags,
+    # Mapping evidence (EsViritu)
+    esv_read_count, esv_breadth_pct, RPM, esv_flags,
+    # De novo evidence (SPAdes + BLAST)
+    blast_coverage, n_contigs, blast_flags,
+    # Technical detail: EsViritu
+    esv_accession, genome_length_bp, esv_covered_bases, esv_ani, pi,
+    RPKMF, RPKMR,
+    # Technical detail: SPAdes + BLAST
+    assembly_status, best_blast_reference, longest_contig_bp,
+    contig_aln_bp, contig_aln_pct, blast_identity_pct,
+    # Taxonomy
+    family, genus, species, subspecies,
+    # Sample-level read funnel (same on every row of a sample)
+    raw_reads, host_filtered_reads, host_removal_pct,
+    trimmed_reads, trim_removed_pct, dedup_reads, dup_rate_pct
+  )
 
 write_tsv(overview, "esv_staged.overview.tsv")
 

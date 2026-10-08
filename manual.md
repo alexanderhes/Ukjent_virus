@@ -179,6 +179,24 @@ sample2-UV;/path/to/raw_data/sample2-UV
 | `--validate_spades_sample_seed` | `11` | Random seed used for deterministic SPAdes input subsampling |
 | `--assembly_taxon_level` | `subspecies` | Taxonomic grouping level for read extraction before assembly. `subspecies` uses the finest available rank (recommended for diverse groups such as Enteroviruses and Rotaviruses); `species` always groups at species level. |
 
+### Overview verdict thresholds
+
+Thresholds for the `verdict`, `esv_verdict` and `blast_verdict` columns and the flag columns (see [Section 11](#verdict)).
+
+| Parameter | Default | Description |
+|---|---|---|
+| `--verdict_esv_min_reads` | `10` | Mapping evidence: minimum EsViritu read count for `esv_verdict = supported` |
+| `--verdict_esv_min_breadth_pct` | `5` | Mapping evidence: minimum EsViritu breadth of coverage (%) for `esv_verdict = supported` |
+| `--verdict_contig_min_aln_bp` | `300` | De novo evidence: minimum aligned bases on the best contig for `blast_verdict = confirmed` |
+| `--verdict_contig_min_aln_pct` | `50` | De novo evidence: minimum % of the best contig aligned for `blast_verdict = confirmed` |
+| `--verdict_artefact_max_aln_bp` | `200` | De novo evidence: best contig with fewer aligned bases than this is `artefact_suspected` |
+| `--verdict_artefact_max_aln_pct` | `20` | De novo evidence: best contig with a smaller aligned fraction (%) than this is `artefact_suspected` |
+| `--verdict_esv_divergent_identity_pct` | `90` | Flag only: `esv_flags` gets `divergent` when EsViritu read identity (%) is below this |
+| `--verdict_blast_divergent_identity_pct` | `90` | Flag only: `blast_flags` gets `divergent` when BLAST identity (%) is below this |
+| `--verdict_recurrent_min_samples` | `2` | Flag only: `flags` gets `in_<k>/<N>_samples` when the taxon is reported in at least this many samples |
+
+The thresholds above also drive the flags: `esv_flags` `low_reads` / `low_breadth` use the two `verdict_esv_*` minimums, and `blast_flags` `short_alignment` / `low_contig_cov` use the two `verdict_artefact_*` maximums.
+
 ### Resources
 
 | Parameter | Default | Description |
@@ -213,7 +231,7 @@ Raw reads (R1 + R2)
  COLLECT_READ_STATS   parses fastp JSONs & raw counts    SPLIT_VIRAL_READS     extract per-species reads
  SUMMARIZE_READ_STATS combine across all samples         SPADES_ASSEMBLY       de novo assembly (metaSPAdes)
  SUMMARIZE_ESV        batch detection summary            BLASTN_VALIDATE       BLAST contigs vs species DB
- MAKE_OVERVIEW_TABLE  30-column overview TSV             SUMMARIZE_VALIDATION  per-sample BLAST summary
+ MAKE_OVERVIEW_TABLE  37-column overview TSV             SUMMARIZE_VALIDATION  per-sample BLAST summary
                                                          VISUALIZE_VALIDATION  per-sample contig PDF
 ```
 
@@ -249,7 +267,7 @@ results/
     ├── esviritu_batch/
     │   └── esv_summary/         # Batch summary TSVs across all samples
     ├── overview/
-    │   ├── <sample>_overview.tsv          # Per-sample 30-column summary
+    │   ├── <sample>_overview.tsv          # Per-sample 37-column summary
     │   └── esv_staged.overview.tsv        # All samples combined
     └── validation/              # (--validate only)
         ├── <sample>_validation_contigs.pdf    # Contig alignment plot (multi-page PDF)
@@ -328,13 +346,37 @@ Use `--assembly_taxon_level species` to always group at species level.
 
 ## 11. Overview Table Columns
 
-The overview table (`overview/<sample>_overview.tsv`) contains 30 columns:
+The overview table (`overview/<sample>_overview.tsv`) contains 37 columns, in this order:
+
+1. **Findings:** `sample_ID`, `virus_name`, `verdict`, `esv_verdict`, `blast_verdict`, `flags`
+2. **Mapping evidence (EsViritu):** `esv_read_count`, `esv_breadth_pct`, `RPM`, `esv_flags`
+3. **De novo evidence (SPAdes + BLAST):** `blast_coverage`, `n_contigs`, `blast_flags`
+4. **Technical detail, EsViritu:** `esv_accession`, `genome_length_bp`, `esv_covered_bases`, `esv_ani`, `pi`, `RPKMF`, `RPKMR`
+5. **Technical detail, SPAdes + BLAST:** `assembly_status`, `best_blast_reference`, `longest_contig_bp`, `contig_aln_bp`, `contig_aln_pct`, `blast_identity_pct`
+6. **Taxonomy:** `family`, `genus`, `species`, `subspecies`
+7. **Read funnel** (sample-level, same on every row of a sample)
+
+The sections below describe the columns grouped by source.
 
 ### Identity
 
 | Column | Description |
 |---|---|
 | `sample_ID` | Sample identifier |
+| `virus_name` | Display name: species + subspecies at `subspecies` level (e.g. `Alphainfluenzavirus influenzae H3N2`), otherwise species |
+
+### Verdict
+
+Mapping evidence (EsViritu) and de novo evidence (SPAdes + BLAST) are judged separately, then combined. Thresholds are the `--verdict_*` parameters.
+
+| Column | Description |
+|---|---|
+| `verdict` | Combined call: `confirmed` (`blast_verdict` confirmed) > `probable` (`esv_verdict` supported) > `artefact_suspected` (BLAST-only hit judged an artefact) > `weak` (everything else) |
+| `esv_verdict` | Mapping evidence: `supported` if `esv_read_count` ≥ `verdict_esv_min_reads` and `esv_breadth_pct` ≥ `verdict_esv_min_breadth_pct`, otherwise `weak`. `NA` for BLAST-only rows |
+| `blast_verdict` | De novo evidence, judged on the best contig (`contig_aln_bp`, `contig_aln_pct`): `confirmed` (≥ `verdict_contig_min_aln_bp` bp and ≥ `verdict_contig_min_aln_pct` % of the contig aligned), `artefact_suspected` (< `verdict_artefact_max_aln_bp` bp or < `verdict_artefact_max_aln_pct` % aligned: a short viral match inside a longer, likely non-viral contig), `inconclusive` (in between), `no_contig` (no contig assigned to this taxon). `NA` without `--validate` |
+| `flags` | General flags: `blast_only` (no EsViritu hit) and `in_<k>/<N>_samples` when the taxon is reported in at least `--verdict_recurrent_min_samples` samples of the batch (informational: a real outbreak and a shared contaminant both recur). Empty when no flag applies |
+| `esv_flags` | Reasons behind `esv_verdict`, each with the value and the threshold it failed: `low_reads(5<10)`, `low_breadth(2.35%<5%)`, `divergent(86.57%<90%)` (EsViritu read identity). Empty when none apply |
+| `blast_flags` | Reasons behind `blast_verdict`, each with the value and the threshold it failed: `short_alignment(81bp<200bp)`, `low_contig_cov(1.9%<20%)` (best contig), `divergent(82.18%<90%)` (BLAST identity). Empty when none apply |
 
 ### Read funnel
 
@@ -352,7 +394,6 @@ The overview table (`overview/<sample>_overview.tsv`) contains 30 columns:
 
 | Column | Description |
 |---|---|
-| `virus_name` | Display name: species + subspecies at `subspecies` level (e.g. `Alphainfluenzavirus influenzae H3N2`), otherwise species |
 | `family` | Viral family |
 | `genus` | Viral genus |
 | `species` | Viral species (ICTV taxonomy, prefix stripped) |
@@ -375,9 +416,10 @@ The overview table (`overview/<sample>_overview.tsv`) contains 30 columns:
 | `assembly_status` | See [Section 10](#assembly_status-values) |
 | `n_contigs` | Number of assembled contigs with BLAST hits |
 | `longest_contig_bp` | Length of the longest assembled contig |
+| `contig_aln_bp` | Query bases of the best contig (most aligned bases) covered by BLAST hits to its assigned reference |
+| `contig_aln_pct` | `contig_aln_bp` as % of that contig's length |
 | `best_blast_reference` | Non-segmented: accession of the reference with the highest total BLAST bit score. Segmented: best accession per segment, `segment:accession;...` (e.g. `L:KF974361.1;M:KF974359.1`). Segments may come from different assemblies (e.g. reassortants). |
-| `blast_genome_cov_pct` | Fraction of the best reference genome covered by assembled contigs |
-| `blast_segment_coverage` | For segmented viruses: per-segment reference coverage, `seg<label>:<pct>%;...` (e.g. `segL:85%;segM:85%;segS:no_hit`). Expected segments are those of the best-supported reference assembly; segment labels are harmonised across assemblies (`L RNA` → `L`, `RNA 2` → `2`). `seg?` = hit to a reference without a segment annotation. `NA` for non-segmented viruses |
+| `blast_coverage` | Reference coverage by assembled contigs. Non-segmented viruses: % of the best reference genome covered (e.g. `92.5%`). Segmented viruses: per-segment coverage, `seg<label>:<pct>%;...` (e.g. `segL:85%;segM:85%;segS:no_hit`); expected segments are those of the best-supported reference assembly, segment labels are harmonised across assemblies (`L RNA` → `L`, `RNA 2` → `2`), and `seg?` = hit to a reference without a segment annotation. `NA` when no contig was assigned |
 | `blast_identity_pct` | Nucleotide identity of the best BLAST hit |
 
 ---
@@ -495,9 +537,9 @@ BLAST is run against a per-species reference database extracted from the EsVirit
 - A highly divergent strain not well represented in the reference database
 - Mis-assembly artefacts producing non-viral sequence
 
-### `blast_genome_cov_pct` is lower than `esv_breadth_pct`
+### `blast_coverage` is lower than `esv_breadth_pct`
 
-`esv_breadth_pct` is based on all reads mapping to the reference (EsViritu metric). `blast_genome_cov_pct` is based only on assembled contigs ≥ 800 bp with significant BLAST hits. Read-level coverage will always be more complete than contig-level coverage, especially for low-coverage samples where reads are too sparse to assemble long contigs.
+`esv_breadth_pct` is based on all reads mapping to the reference (EsViritu metric). `blast_coverage` is based only on assembled contigs ≥ 800 bp with significant BLAST hits. Read-level coverage will always be more complete than contig-level coverage, especially for low-coverage samples where reads are too sparse to assemble long contigs.
 
 ### Cleaning up work files
 
