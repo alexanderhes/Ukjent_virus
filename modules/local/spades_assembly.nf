@@ -1,7 +1,8 @@
 /*
  * SPADES_ASSEMBLY
  *
- * De novo assembly of sample-level deduplicated read pairs using SPAdes.
+ * De novo assembly of sample-level trimmed, deduplicated, host-filtered read
+ * pairs using SPAdes.
  *
  * Two paths:
  *   ≥ params.validate_min_reads → SPAdes assembly (mode driven by spades_mode input);

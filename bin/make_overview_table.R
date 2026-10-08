@@ -3,8 +3,8 @@
 #
 # Produces a comprehensive per-sample and batch-level overview TSV combining:
 #
-#   Part 1 - Read funnel:
-#     raw_reads -> host_filtered_reads -> trimmed_reads -> dedup_reads,
+#   Part 1 - Read funnel (pipeline order trim -> dedup -> host filter):
+#     raw_reads -> trimmed_reads -> dedup_reads -> host_filtered_reads,
 #     with percentage removal at each step.
 #
 #   Part 2 - EsViritu results (one row per assembly-set, one row per accession/accession-set):
@@ -24,6 +24,28 @@
 #     is that of the best-supported assembly; segment labels are normalised
 #     across assemblies, and accessions without a segment label appear as "seg?".
 #
+#   Part 3b - Combined genome (NA unless --validate and --scaffold): contigs of a
+#     taxon combined against their best reference and polished with reads
+#     (POLISH_SCAFFOLD, *_genome_stats.tsv).
+#     genome_assessment (front-loaded): overall called (non-N) bases / reference
+#     length over all segments: "complete" (>= <genome_complete_pct>),
+#     "partial" (>= <genome_partial_pct>), "fragmented" (> 0), "no_genome"
+#     (scaffolding ran, nothing called); NA = no genome attempted (no contig
+#     passed the scaffolding filter). A segmented virus with an expected
+#     segment without any contig (blast_segment_coverage "no_hit") is at most
+#     "partial".
+#     genome_coverage: called (non-N) bases / reference length, "<pct>%" or
+#     per segment "segL:95%;segM:no_genome" for segmented viruses;
+#     genome_len, genome_N_pct, genome_n_contigs: totals over all segments;
+#     genome_mean_depth: length-weighted mean read depth.
+#
+#   Part 3c - Protein-level rescue (experimental): passing tblastx hits from
+#     *_tblastx.tsv (contigs without nucleotide support searched with tblastx).
+#     tblastx_n_contigs, tblastx_aa_identity_pct (aligned-length weighted),
+#     tblastx_contig_aln_pct (best contig), tblastx_reference. A taxon already
+#     in the table gets these columns and flag tblastx_hit; a taxon found only
+#     by tblastx gets its own row with verdict protein_hit_only.
+#
 #   Part 4 - Verdict (verdicts and flags placed right after virus_name):
 #     esv_verdict   - mapping evidence (EsViritu): "supported" when read count and
 #                     breadth both pass their thresholds, else "weak"; NA for
@@ -33,8 +55,9 @@
 #                     "confirmed", "inconclusive", "artefact_suspected" (short or
 #                     small-fraction hit inside a longer contig), "no_contig";
 #                     NA when --validate is off.
-#     verdict       - combined: confirmed (BLAST confirmed) > probable (ESV
-#                     supported) > artefact_suspected (BLAST-only artefact) > weak.
+#     verdict       - combined: protein_hit_only (tblastx-only row) > confirmed
+#                     (BLAST confirmed) > probable (ESV supported) >
+#                     artefact_suspected (BLAST-only artefact) > weak.
 #     flags         - general: blast_only, in_<k>/<N>_samples (taxon in at least
 #                     recurrent_min_samples samples).
 #     esv_flags     - mapping reasons: low_reads, low_breadth, divergent.
@@ -47,7 +70,7 @@
 #     <esv_min_reads> <esv_min_breadth_pct> <contig_min_aln_bp> <contig_min_aln_pct>
 #     <artefact_max_aln_bp> <artefact_max_aln_pct>
 #     <esv_divergent_identity_pct> <blast_divergent_identity_pct>
-#     <recurrent_min_samples>
+#     <recurrent_min_samples> <genome_complete_pct> <genome_partial_pct>
 # Input TSVs are discovered by filename pattern in the working directory.
 
 suppressPackageStartupMessages(library(tidyverse))
@@ -66,6 +89,11 @@ artefact_max_aln_pct <- as.numeric(args[9])
 esv_divergent_identity_pct   <- as.numeric(args[10])
 blast_divergent_identity_pct <- as.numeric(args[11])
 recurrent_min_samples        <- as.numeric(args[12])
+genome_complete_pct          <- as.numeric(args[13])
+genome_partial_pct           <- as.numeric(args[14])
+if (anyNA(c(genome_complete_pct, genome_partial_pct))) {
+  stop("genome_complete_pct and genome_partial_pct (arguments 13-14) must be numeric")
+}
 
 if (anyNA(c(esv_min_reads, esv_min_breadth_pct, contig_min_aln_bp,
             contig_min_aln_pct, artefact_max_aln_bp, artefact_max_aln_pct,
@@ -603,6 +631,56 @@ if (run_validate) {
     )
 }
 
+# ── Part 3b: Combined genome (POLISH_SCAFFOLD) ────────────────────────────────
+genome_stats <- tibble(
+  sample_ID = character(),
+  safe_taxon = character(),
+  genome_coverage = character(),
+  genome_len = numeric(),
+  genome_N_pct = numeric(),
+  genome_mean_depth = numeric(),
+  genome_n_contigs = numeric(),
+  genome_overall_pct = numeric()
+)
+
+scaffold_files <- list.files(".", pattern = "_genome_stats\\.tsv$", full.names = TRUE)
+
+if (run_validate && length(scaffold_files) > 0) {
+  scaffold_raw <- map_dfr(scaffold_files, function(f) {
+    read_tsv(f, col_types = cols(.default = "c"), na = c("", "NA"),
+             show_col_types = FALSE)
+  }) %>%
+    mutate(across(c(genome_len, n_count, ref_cov_pct, mean_depth, n_contigs_used,
+                    ref_length), as.numeric))
+
+  if (nrow(scaffold_raw) > 0) {
+    genome_stats <- scaffold_raw %>%
+      mutate(
+        seg = coalesce(segment, ""),
+        cov_str = if_else(genome_len > 0, paste0(round(ref_cov_pct, 0), "%"), "no_genome")
+      ) %>%
+      arrange_segments(sample, safe_taxon) %>%
+      group_by(sample_ID = sample, safe_taxon) %>%
+      summarise(
+        genome_coverage = if (all(seg == "")) {
+          if_else(first(genome_len) > 0, paste0(first(ref_cov_pct), "%"), "no_genome")
+        } else {
+          paste0("seg", seg, ":", cov_str, collapse = ";")
+        },
+        genome_N_pct = if (sum(genome_len) > 0)
+          round(sum(n_count) / sum(genome_len) * 100, 1) else NA_real_,
+        genome_mean_depth = if (sum(genome_len) > 0)
+          round(sum(mean_depth * genome_len) / sum(genome_len), 1) else NA_real_,
+        genome_overall_pct = if (sum(ref_length, na.rm = TRUE) > 0)
+          min(100, sum(genome_len - n_count) / sum(ref_length, na.rm = TRUE) * 100)
+          else NA_real_,
+        genome_len = sum(genome_len),
+        genome_n_contigs = sum(n_contigs_used),
+        .groups = "drop"
+      )
+  }
+}
+
 # ── Combine all parts and write outputs ───────────────────────────────────────
 overview <- asm %>%
   left_join(read_stats, by = "sample_ID") %>%
@@ -613,8 +691,8 @@ overview <- asm %>%
   left_join(blast_part, by = c("sample_ID", "safe_taxon")) %>%
   select(
     sample_ID,
-    raw_reads, host_filtered_reads, host_removal_pct,
-    trimmed_reads, trim_removed_pct, dedup_reads, dup_rate_pct,
+    raw_reads, trimmed_reads, trim_removed_pct,
+    dedup_reads, dup_rate_pct, host_filtered_reads, host_removal_pct,
     safe_taxon,
     virus_name, family, genus, species, subspecies = subspecies_col,
     esv_accession = Accession,
@@ -645,8 +723,8 @@ if (run_validate && nrow(blast_stats) > 0) {
               by = "best_blast_reference") %>%
     transmute(
       sample_ID,
-      raw_reads, host_filtered_reads, host_removal_pct,
-      trimmed_reads, trim_removed_pct, dedup_reads, dup_rate_pct,
+      raw_reads, trimmed_reads, trim_removed_pct,
+      dedup_reads, dup_rate_pct, host_filtered_reads, host_removal_pct,
       safe_taxon,
       virus_name = coalesce(virus_name, gsub("_", " ", safe_taxon)),
       family, genus, species, subspecies = subspecies_meta,
@@ -669,11 +747,57 @@ if (run_validate && nrow(blast_stats) > 0) {
 
 overview <- bind_rows(overview, blast_only_rows)
 
+# ── Part 3c: Protein-level rescue (tblastx) ───────────────────────────────────
+tblastx_stats <- tibble(
+  sample_ID = character(), safe_taxon = character(),
+  tblastx_n_contigs = integer(), tblastx_aa_identity_pct = numeric(),
+  tblastx_contig_aln_pct = numeric(), tblastx_reference = character()
+)
+
+tblastx_files <- list.files(".", pattern = "_tblastx\\.tsv$", full.names = TRUE)
+if (run_validate && length(tblastx_files) > 0) {
+  tblastx_pass <- map_dfr(tblastx_files, function(f) {
+    read_tsv(f, col_types = cols(.default = "c"), show_col_types = FALSE)
+  }) %>%
+    filter(Passed == "true") %>%
+    mutate(across(c(`AA_Identity_%`, Aligned_bp, `Aligned_%`, Total_Bit_Score), as.numeric))
+
+  if (nrow(tblastx_pass) > 0) {
+    tblastx_stats <- tblastx_pass %>%
+      group_by(sample_ID = Sample, safe_taxon = Species) %>%
+      summarise(
+        tblastx_n_contigs = n_distinct(Scaffold_ID),
+        tblastx_aa_identity_pct = round(sum(`AA_Identity_%` * Aligned_bp) / sum(Aligned_bp), 2),
+        tblastx_contig_aln_pct = max(`Aligned_%`),
+        tblastx_reference = Matched_Reference[which.max(Total_Bit_Score)],
+        .groups = "drop"
+      )
+
+    tblastx_only_rows <- tblastx_stats %>%
+      anti_join(overview %>% distinct(sample_ID, safe_taxon), by = c("sample_ID", "safe_taxon")) %>%
+      left_join(taxon_meta, by = "safe_taxon") %>%
+      left_join(read_stats, by = "sample_ID") %>%
+      transmute(
+        sample_ID,
+        raw_reads, trimmed_reads, trim_removed_pct,
+        dedup_reads, dup_rate_pct, host_filtered_reads, host_removal_pct,
+        safe_taxon,
+        virus_name = coalesce(virus_name, gsub("_", " ", safe_taxon)),
+        family, genus, species, subspecies = subspecies_meta,
+        genome_length_bp = as.numeric(genome_length_bp),
+        assembly_status = "tblastx_only_detection"
+      )
+    overview <- bind_rows(overview, tblastx_only_rows)
+  }
+}
+
 # ── Part 4: Verdict ───────────────────────────────────────────────────────────
 n_batch_samples <- n_distinct(read_stats$sample_ID)
 
 overview <- overview %>%
   left_join(contig_evidence, by = c("sample_ID", "safe_taxon")) %>%
+  left_join(genome_stats, by = c("sample_ID", "safe_taxon")) %>%
+  left_join(tblastx_stats, by = c("sample_ID", "safe_taxon")) %>%
   group_by(safe_taxon) %>%
   mutate(n_samples_with_taxon = n_distinct(sample_ID)) %>%
   ungroup() %>%
@@ -686,6 +810,7 @@ overview <- overview %>%
     ),
     blast_verdict = case_when(
       !run_validate                               ~ NA_character_,
+      assembly_status %in% "tblastx_only_detection" ~ NA_character_,
       is.na(contig_aln_bp)                        ~ "no_contig",
       contig_aln_bp >= contig_min_aln_bp &
         contig_aln_pct >= contig_min_aln_pct      ~ "confirmed",
@@ -700,7 +825,16 @@ overview <- overview %>%
       if_else(is.na(blast_genome_cov_pct), NA_character_,
               paste0(blast_genome_cov_pct, "%"))
     ),
+    genome_assessment = case_when(
+      is.na(genome_len)                                 ~ NA_character_,
+      genome_len == 0                                   ~ "no_genome",
+      genome_overall_pct >= genome_complete_pct &
+        !str_detect(coalesce(blast_segment_coverage, ""), "no_hit") ~ "complete",
+      genome_overall_pct >= genome_partial_pct          ~ "partial",
+      TRUE                                              ~ "fragmented"
+    ),
     verdict = case_when(
+      assembly_status %in% "tblastx_only_detection" ~ "protein_hit_only",
       blast_verdict %in% "confirmed"              ~ "confirmed",
       esv_verdict %in% "supported"                ~ "probable",
       is.na(esv_verdict) &
@@ -708,7 +842,9 @@ overview <- overview %>%
       TRUE                                        ~ "weak"
     ),
     flags = collapse_flags(
-      if_else(is.na(esv_read_count), "blast_only", NA_character_),
+      if_else(is.na(esv_read_count) & !assembly_status %in% "tblastx_only_detection",
+              "blast_only", NA_character_),
+      if_else(!is.na(tblastx_n_contigs), "tblastx_hit", NA_character_),
       if_else(n_samples_with_taxon >= recurrent_min_samples,
               paste0("in_", n_samples_with_taxon, "/", n_batch_samples, "_samples"),
               NA_character_)
@@ -730,22 +866,30 @@ overview <- overview %>%
   # also grouped per analysis.
   select(
     # Findings
-    sample_ID, virus_name, verdict, esv_verdict, blast_verdict, flags,
+    sample_ID, virus_name, verdict, esv_verdict, blast_verdict,
+    genome_assessment, flags,
     # Mapping evidence (EsViritu)
     esv_read_count, esv_breadth_pct, RPM, esv_flags,
     # De novo evidence (SPAdes + BLAST)
     blast_coverage, n_contigs, blast_flags,
+    # Combined genome (contigs per taxon, polished with reads)
+    genome_coverage, genome_N_pct, genome_mean_depth,
+    # Protein-level rescue (tblastx, experimental)
+    tblastx_n_contigs, tblastx_aa_identity_pct, tblastx_contig_aln_pct,
     # Technical detail: EsViritu
     esv_accession, genome_length_bp, esv_covered_bases, esv_ani, pi,
     RPKMF, RPKMR,
     # Technical detail: SPAdes + BLAST
     assembly_status, best_blast_reference, longest_contig_bp,
     contig_aln_bp, contig_aln_pct, blast_identity_pct,
+    # Technical detail: combined genome
+    genome_len, genome_n_contigs,
+    tblastx_reference,
     # Taxonomy
     family, genus, species, subspecies,
     # Sample-level read funnel (same on every row of a sample)
-    raw_reads, host_filtered_reads, host_removal_pct,
-    trimmed_reads, trim_removed_pct, dedup_reads, dup_rate_pct
+    raw_reads, trimmed_reads, trim_removed_pct,
+    dedup_reads, dup_rate_pct, host_filtered_reads, host_removal_pct
   )
 
 write_tsv(overview, "esv_staged.overview.tsv")

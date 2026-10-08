@@ -1,7 +1,8 @@
 /*
  * FASTP_DEDUP
  *
- * Pass 2 — deduplication only (no re-trimming).
+ * Pass 2 — deduplication only (no re-trimming), on trimmed reads, before
+ * HOST_FILTER so that bowtie2 aligns fewer reads.
  * Runs on already-trimmed reads so that adapter/quality differences
  * no longer mask identical sequences. This reveals the full duplicate
  * population (~40-50%) compared to ~5% visible in raw reads.

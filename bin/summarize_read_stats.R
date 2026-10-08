@@ -5,7 +5,7 @@
 #
 #   esv_staged.read_stats.tsv
 #     Batch-level read-count funnel: one row per sample with
-#     raw_reads, host_filtered_reads, trimmed_reads, dedup_reads,
+#     raw_reads, trimmed_reads, dedup_reads, host_filtered_reads,
 #     and the three derived removal percentages.
 #
 #   esv_staged.detected_virus.info.enriched.tsv
