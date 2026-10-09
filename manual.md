@@ -42,7 +42,7 @@ All steps run inside Docker containers — no conda environments or manual tool 
 | Docker | 20.10 | Must be accessible to the user running Nextflow |
 | Java | 11 | Required by Nextflow |
 
-Disk space: ~10–20 GB per sample (intermediates are kept in `work/`; run `nextflow clean -f` after a successful run to free space).
+Disk space: ~10–20 GB per sample (intermediates are kept in `work/`, or in `/mnt/tempdata/esv_work` with `-profile server`; run `nextflow clean -f` after a successful run to free space).
 
 ---
 
@@ -273,6 +273,7 @@ Deduplication is intentionally separated from trimming. Running dedup **after** 
 ```
 results/
 └── <analysis_name>/
+    ├── logs/                    # (NGS_wrapper.sh only) wrapper, status and Nextflow logs
     ├── pipeline_info/
     │   ├── report.html          # Nextflow execution report
     │   ├── timeline.html        # Task timeline
@@ -528,6 +529,7 @@ bash NGS_wrapper.sh -r NGS_SEQ-20260210-01 -a UkjentVirus -y 2026
 | `-r` | Analysis run name — used to name the output folder on the N-drive and local status files |
 | `-a` | Agens subfolder on the N-drive results tree (e.g. `UkjentVirus`) |
 | `-y` | Year subfolder on the N-drive results tree (e.g. `2026`) |
+| `--upload-only` | Only upload the results of a finished run whose upload failed (skips download and pipeline; use the same `-r`/`-a`/`-y`) |
 
 ### What the wrapper does
 
@@ -537,12 +539,19 @@ bash NGS_wrapper.sh -r NGS_SEQ-20260210-01 -a UkjentVirus -y 2026
 4. **Pulls** the latest pipeline version from GitHub (`alexanderhes/Ukjent_virus`).
 5. **Builds** the custom Docker image (`esviritu_pipeline:latest`).
 6. **Runs** the Nextflow pipeline.
-7. **Uploads** results back to the N-drive under `…/2-Resultater/<AGENS>/<YEAR>/<RUN>/`.
-8. **Cleans up** local temp files and Nextflow work directories.
+7. **Copies** the run's log files into `logs/` in the results.
+8. **Uploads** results back to the N-drive under `…/2-Resultater/<AGENS>/<YEAR>/<RUN>/` and **verifies** the upload (same number of files and total bytes on N as locally).
+9. **Cleans up** local temp files, this run's Nextflow work directories (`nextflow clean -f <run name>`) and the run's log files on the server — only after a verified upload.
+
+If the upload fails or cannot be verified, the wrapper stops without deleting anything (results, FASTQs, work directory and logs are kept). Retry the upload alone with `--upload-only`; `smbclient mput` overwrites, so a partial upload is completed.
+
+With `-profile server` (always used by the wrapper) Nextflow's work directory is `/mnt/tempdata/esv_work`.
 
 ### Status file
 
-The wrapper maintains a per-run status file at `~/esv_<RUN>_status.txt`. This is updated at each major step and on any error. A main log is appended to `~/esv_wrapper.log`.
+The wrapper maintains a per-run status file at `~/esv_<RUN>_status.txt`. This is updated at each major step and on any error; after a failed upload it also shows the `--upload-only` retry command.
+
+Each run has its own log files in `/home/ngs`: `esv_<RUN>_wrapper.log` (all console output), `esv_<RUN>_wrapper_error.log` (status history), `esv_<RUN>_status.txt` and `esv_<RUN>_nextflow.log` (plus `.1`, `.2`, … from earlier `--resume` attempts). They are uploaded with the results to `<RUN>/logs/` on the N-drive and deleted from the server after a verified upload. If the run fails they are kept.
 
 ### N-drive samplesheet format
 
