@@ -63,14 +63,32 @@ screen -S Test_run -d -m bash /home/ngs/ngs_scripts/ukjent_virus/NGS_wrapper.sh 
 -a UkjentVirus \
 -y 2026 \
 --sensitive-filter
+
+# Retry only the upload to N after it failed (pipeline is not rerun)
+screen -S Test_run -d -m bash /home/ngs/ngs_scripts/ukjent_virus/NGS_wrapper.sh \
+-r test_run \
+-a UkjentVirus \
+-y 2026 \
+--upload-only
 ```
 
 ## Monitoring
 
 ```bash
-# Follow the live wrapper log from outside the screen
-tail -f /home/ngs/esv_wrapper.log
+# Follow the live wrapper log of a run from outside the screen (esv_<run name>_wrapper.log)
+tail -f /home/ngs/esv_test_run_wrapper.log
 
 # Check the last status of a specific run (esv_<run name>_status.txt)
 cat ~/esv_test_run_status.txt
 ```
+
+Each run writes its own log files in `/home/ngs` (`esv_<run>_wrapper.log`,
+`_wrapper_error.log`, `_status.txt`, `_nextflow.log`). They are uploaded with the
+results to `<run>/logs/` on N. After a verified upload they are deleted from the
+server; if the run or the upload fails they are kept.
+
+Nothing is deleted from the server unless the upload to N has been verified
+(same number of files and bytes). If the upload fails, the results, FASTQs,
+Nextflow work directory and logs are kept, and the status file shows the
+`--upload-only` command to retry. Nextflow intermediates are kept in
+`/mnt/tempdata/esv_work` (`server` profile).
