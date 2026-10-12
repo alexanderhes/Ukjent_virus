@@ -19,6 +19,7 @@ include { VISUALIZE_VALIDATION   } from './modules/local/visualize_validation'
 include { SCAFFOLD_GROUPS        } from './modules/local/scaffold_groups'
 include { SCAFFOLD_MINIMAP2      } from './modules/local/scaffold_minimap2'
 include { POLISH_SCAFFOLD        } from './modules/local/polish_scaffold'
+include { VISUALIZE_GENOMES      } from './modules/local/visualize_genomes'
 
 // ── Logging ──────────────────────────────────────────────────────────────────
 log.info """
@@ -33,7 +34,7 @@ log.info """
     ║  spades_mode : ${params.spades_mode ?: (params.esviritu_db ==~ /(?i).*HEV.*/ ? 'rnaviral (auto)' : 'meta (auto)')}
     ║  spades_cap  : ${params.validate_spades_max_pairs ? "${params.validate_spades_max_pairs} pairs" : 'disabled'}
     ║  spades_mem  : 220.GB
-    ║  scaffold    : ${params.validate && params.scaffold ? "minimap2 (polish: ${params.polish_rounds} rounds, min depth ${params.polish_min_depth})" : 'disabled'}
+    ║  scaffold    : ${params.validate && params.scaffold ? "minimap2 (overhang <= ${params.scaffold_max_overhang} bp; polish: ${params.polish_rounds} rounds, min depth ${params.polish_min_depth}, contig bases ${params.polish_contig_bases})" : 'disabled'}
     ╚═══════════════════════════════════════════════╝
     """.stripIndent()
 
@@ -44,8 +45,8 @@ if (params.verdict_thresholds_provisional) {
     def verdictWarning = """
         WORK IN PROGRESS: overview verdict/flag thresholds are provisional and not validated.
         Treat verdict, esv_verdict, blast_verdict, flags, esv_flags and blast_flags as indicative only.
-          esv      : min_reads=${params.verdict_esv_min_reads} min_breadth_pct=${params.verdict_esv_min_breadth_pct} divergent_identity_pct=${params.verdict_esv_divergent_identity_pct}
-          blast    : contig_min_aln_bp=${params.verdict_contig_min_aln_bp} contig_min_aln_pct=${params.verdict_contig_min_aln_pct} artefact_max_aln_bp=${params.verdict_artefact_max_aln_bp} artefact_max_aln_pct=${params.verdict_artefact_max_aln_pct} divergent_identity_pct=${params.verdict_blast_divergent_identity_pct}
+          esv      : min_reads=${params.verdict_esv_min_reads} min_rpm=${params.verdict_esv_min_rpm} min_breadth_pct=${params.verdict_esv_min_breadth_pct} probable_min_breadth_pct=${params.verdict_esv_probable_min_breadth_pct} divergent_identity_pct=${params.verdict_esv_divergent_identity_pct}
+          blast    : min_ref_bp=${params.verdict_blast_min_ref_bp} min_ref_pct=${params.verdict_blast_min_ref_pct} artefact_max_aln_bp=${params.verdict_artefact_max_aln_bp} artefact_max_aln_pct=${params.verdict_artefact_max_aln_pct} divergent_identity_pct=${params.verdict_blast_divergent_identity_pct}
           recurrent: min_samples=${params.verdict_recurrent_min_samples}
         Set verdict_thresholds_provisional = false in conf/params.config once validated.
         """.stripIndent()
@@ -195,8 +196,11 @@ workflow {
             }
             FILTER_HOST_CONTIGS(SPADES_ASSEMBLY.out.query, ch_host_blastdb)
             FILTER_HOST_CONTIGS.out.query.set { ch_blast_input }
+            FILTER_HOST_CONTIGS.out.blast.set { ch_host_hits }
         } else {
             SPADES_ASSEMBLY.out.query.set { ch_blast_input }
+            // No host BLAST hits: contig overhangs are not checked against the host
+            SPADES_ASSEMBLY.out.query.map { meta, query -> [meta, []] }.set { ch_host_hits }
         }
 
         BLASTN_VALIDATE(ch_blast_input, ch_esviritu_db)
@@ -221,6 +225,7 @@ workflow {
 
             ch_blast_input
                 .join(SCAFFOLD_GROUPS.out.groups)
+                .join(ch_host_hits)
                 .set { ch_scaffold_input }
 
             SCAFFOLD_MINIMAP2(ch_scaffold_input, ch_esviritu_db)
@@ -232,6 +237,14 @@ workflow {
                 .set { ch_polish_input }
 
             POLISH_SCAFFOLD(ch_polish_input)
+
+            // Genome plots: overview per species and coverage per genome
+            POLISH_SCAFFOLD.out.stats
+                .join(POLISH_SCAFFOLD.out.plot_data)
+                .join(SCAFFOLD_MINIMAP2.out.contig_aln)
+                .set { ch_genome_plot_input }
+
+            VISUALIZE_GENOMES(ch_genome_plot_input, ch_ref_lengths_all)
 
             POLISH_SCAFFOLD.out.stats
                 .map { meta, tsv -> tsv }

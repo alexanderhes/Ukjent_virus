@@ -11,13 +11,18 @@
 #     Breadth of coverage (%), RPM, RPKMR, RPKMF, ANI, Pi, read count.
 #     Segmented viruses are handled correctly via assembly_summary.tsv
 #     (one row per assembly-set, combined genome length across all segments).
+#     esv_segment_breadth_pct: breadth of the best-covered segment (record) for
+#     segmented viruses (from info.enriched.tsv), = esv_breadth_pct otherwise.
 #
 #   Part 3 - Assembly + BLAST validation (NA when --validate not used):
 #     assembly_status, n_contigs, longest_contig_bp,
 #     blast_coverage: reference coverage by contigs, "<pct>%" for
 #     non-segmented viruses or a per-segment inline string
 #     "seg1:X%;seg2:no_hit;..." for segmented ones,
-#     blast_identity_pct.
+#     blast_identity_pct, blast_ref_cov_bp / blast_ref_cov_pct (reference bases
+#     covered by the taxon's contigs and their % of the reference; segmented:
+#     all segments together, missing expected segments counted with their
+#     length).
 #     For segmented viruses each segment uses its own best-matching accession
 #     (segments may come from different assemblies, e.g. reassortants), listed
 #     in best_blast_reference as "seg:accession;...". The expected segment set
@@ -28,16 +33,22 @@
 #     taxon combined against their best reference and polished with reads
 #     (POLISH_SCAFFOLD, *_genome_stats.tsv).
 #     genome_assessment (front-loaded): overall called (non-N) bases / reference
-#     length over all segments: "complete" (>= <genome_complete_pct>),
-#     "partial" (>= <genome_partial_pct>), "fragmented" (> 0), "no_genome"
-#     (scaffolding ran, nothing called); NA = no genome attempted (no contig
-#     passed the scaffolding filter). A segmented virus with an expected
-#     segment without any contig (blast_segment_coverage "no_hit") is at most
-#     "partial".
+#     length over all segments, graded "complete" (>= <genome_complete_pct>),
+#     "high" (>= <genome_high_pct>), "partial" (>= <genome_partial_pct>), "low"
+#     (>= <genome_low_pct>), "fragmented" (below), "no_genome" (scaffolding ran,
+#     nothing called); NA = no genome attempted (no contig passed the
+#     scaffolding filter). A segmented virus with an expected segment without
+#     any contig (blast_segment_coverage "no_hit") is never "complete".
+#     blast_assessment: the same grades for blast_ref_cov_pct (NA without a
+#     contig or for artefacts).
 #     genome_coverage: called (non-N) bases / reference length, "<pct>%" or
 #     per segment "segL:95%;segM:no_genome" for segmented viruses;
-#     genome_len, genome_N_pct, genome_n_contigs: totals over all segments;
-#     genome_mean_depth: length-weighted mean read depth.
+#     genome_len (full length: reference length plus contig overhangs, end Ns
+#     kept), genome_trimmed_len (end Ns removed), genome_N_pct (Ns of the
+#     full-length genome, so it includes the uncovered ends), genome_n_contigs:
+#     totals over all segments; genome_mean_depth: length-weighted mean read
+#     depth. Called bases count only at reference positions (ref_called_bp), so
+#     overhangs and inserted bases do not raise genome_overall_pct.
 #
 #   Part 3c - Protein-level rescue (experimental): passing tblastx hits from
 #     *_tblastx.tsv (contigs without nucleotide support searched with tblastx).
@@ -47,30 +58,39 @@
 #     by tblastx gets its own row with verdict protein_hit_only.
 #
 #   Part 4 - Verdict (verdicts and flags placed right after virus_name):
-#     esv_verdict   - mapping evidence (EsViritu): "supported" when read count and
-#                     breadth both pass their thresholds, else "weak"; NA for
-#                     BLAST-only rows.
-#     blast_verdict - de novo evidence (SPAdes + BLAST), judged on the contig with
-#                     the most aligned bases (contig_aln_bp / contig_aln_pct):
-#                     "confirmed", "inconclusive", "artefact_suspected" (short or
-#                     small-fraction hit inside a longer contig), "no_contig";
-#                     NA when --validate is off.
+#     esv_verdict   - mapping evidence (EsViritu): "supported" when read count,
+#                     RPM and breadth (best segment for segmented viruses) all
+#                     pass their thresholds, else "weak"; NA for BLAST-only rows.
+#     blast_verdict - de novo evidence (SPAdes + BLAST): "no_contig";
+#                     "artefact_suspected" when the contig with the most aligned
+#                     bases is mostly non-viral (contig_aln_bp / contig_aln_pct
+#                     below the artefact thresholds); "confirmed" when the
+#                     taxon's contigs cover >= <blast_min_ref_bp> bp or
+#                     >= <blast_min_ref_pct> % of the reference, or the polished
+#                     genome covers >= <genome_partial_pct> %; else
+#                     "inconclusive". NA when --validate is off.
 #     verdict       - combined: protein_hit_only (tblastx-only row) > confirmed
-#                     (BLAST confirmed) > probable (ESV supported) >
-#                     artefact_suspected (BLAST-only artefact) > weak.
+#                     (ESV supported or BLAST confirmed) > probable (BLAST
+#                     inconclusive, or >= <esv_min_reads> reads with breadth
+#                     >= <esv_probable_min_breadth_pct> %) > artefact_suspected
+#                     (BLAST-only artefact) > weak.
 #     flags         - general: blast_only, in_<k>/<N>_samples (taxon in at least
 #                     recurrent_min_samples samples).
-#     esv_flags     - mapping reasons: low_reads, low_breadth, divergent.
-#     blast_flags   - de novo reasons: short_alignment, low_contig_cov, divergent.
+#     esv_flags     - mapping reasons: low_reads, low_rpm, low_breadth, divergent.
+#     blast_flags   - de novo reasons: short_alignment, low_contig_cov,
+#                     low_ref_cov (below both reference-coverage thresholds),
+#                     divergent.
 #     Threshold flags carry the value and the threshold it failed, e.g.
 #     "low_reads(5<10)", "divergent(82.18%<90%)".
 #
 # Params are passed as command-line arguments by the Nextflow process:
 #   make_overview_table.R <run_validate> <validate_min_reads> <assembly_taxon_level>
-#     <esv_min_reads> <esv_min_breadth_pct> <contig_min_aln_bp> <contig_min_aln_pct>
+#     <esv_min_reads> <esv_min_rpm> <esv_min_breadth_pct> <esv_probable_min_breadth_pct>
+#     <blast_min_ref_bp> <blast_min_ref_pct>
 #     <artefact_max_aln_bp> <artefact_max_aln_pct>
 #     <esv_divergent_identity_pct> <blast_divergent_identity_pct>
-#     <recurrent_min_samples> <genome_complete_pct> <genome_partial_pct>
+#     <recurrent_min_samples>
+#     <genome_complete_pct> <genome_high_pct> <genome_partial_pct> <genome_low_pct>
 # Input TSVs are discovered by filename pattern in the working directory.
 
 suppressPackageStartupMessages(library(tidyverse))
@@ -80,27 +100,25 @@ args                 <- commandArgs(trailingOnly = TRUE)
 run_validate         <- as.logical(args[1])
 validate_min_reads   <- as.integer(args[2])
 assembly_taxon_level <- args[3]
-esv_min_reads        <- as.numeric(args[4])
-esv_min_breadth_pct  <- as.numeric(args[5])
-contig_min_aln_bp    <- as.numeric(args[6])
-contig_min_aln_pct   <- as.numeric(args[7])
-artefact_max_aln_bp  <- as.numeric(args[8])
-artefact_max_aln_pct <- as.numeric(args[9])
-esv_divergent_identity_pct   <- as.numeric(args[10])
-blast_divergent_identity_pct <- as.numeric(args[11])
-recurrent_min_samples        <- as.numeric(args[12])
-genome_complete_pct          <- as.numeric(args[13])
-genome_partial_pct           <- as.numeric(args[14])
-if (anyNA(c(genome_complete_pct, genome_partial_pct))) {
-  stop("genome_complete_pct and genome_partial_pct (arguments 13-14) must be numeric")
+thr <- suppressWarnings(as.numeric(args[4:18]))
+if (length(args) != 18 || anyNA(thr)) {
+  stop("Expected 18 arguments with numeric verdict thresholds in positions 4-18 (see header)")
 }
-
-if (anyNA(c(esv_min_reads, esv_min_breadth_pct, contig_min_aln_bp,
-            contig_min_aln_pct, artefact_max_aln_bp, artefact_max_aln_pct,
-            esv_divergent_identity_pct, blast_divergent_identity_pct,
-            recurrent_min_samples))) {
-  stop("Verdict thresholds (arguments 4-12) must all be numeric")
-}
+esv_min_reads                <- thr[1]   # esv supported: reads >= ...
+esv_min_rpm                  <- thr[2]   # ... and RPM >= ...
+esv_min_breadth_pct          <- thr[3]   # ... and breadth (best segment) >= ...
+esv_probable_min_breadth_pct <- thr[4]   # probable: reads >= esv_min_reads and breadth >= this
+blast_min_ref_bp             <- thr[5]   # blast confirmed: reference bp covered by contigs >= ...
+blast_min_ref_pct            <- thr[6]   # ... or reference % covered >= ... (or genome >= partial)
+artefact_max_aln_bp          <- thr[7]
+artefact_max_aln_pct         <- thr[8]
+esv_divergent_identity_pct   <- thr[9]
+blast_divergent_identity_pct <- thr[10]
+recurrent_min_samples        <- thr[11]
+genome_complete_pct          <- thr[12]  # coverage grades (genome_assessment, blast_assessment)
+genome_high_pct              <- thr[13]
+genome_partial_pct           <- thr[14]
+genome_low_pct               <- thr[15]
 
 if (!assembly_taxon_level %in% c("species", "subspecies")) {
   stop("assembly_taxon_level must be 'species' or 'subspecies'")
@@ -223,6 +241,20 @@ flag_below <- function(name, value, threshold, unit = "") {
           NA_character_)
 }
 
+# Coverage grade (genome_assessment, blast_assessment): complete / high /
+# partial / low / fragmented by % of the reference. A segmented virus with an
+# expected segment without any contig ("no_hit") is never complete.
+coverage_grade <- function(pct, seg_cov) {
+  case_when(
+    is.na(pct)                                              ~ NA_character_,
+    pct >= genome_complete_pct & !str_detect(seg_cov, "no_hit") ~ "complete",
+    pct >= genome_high_pct                                  ~ "high",
+    pct >= genome_partial_pct                               ~ "partial",
+    pct >= genome_low_pct                                   ~ "low",
+    TRUE                                                    ~ "fragmented"
+  )
+}
+
 # Join per-row flag vectors (NA = flag not raised) into "flag1;flag2"; "" if none.
 collapse_flags <- function(...) {
   out <- character(length(..1))
@@ -320,7 +352,15 @@ asm_raw <- read_tsv(asm_sum_file, col_types = cols(.default = "c"),
 
 info_raw <- read_tsv(info_enrich_file, col_types = cols(.default = "c"),
                      show_col_types = FALSE) %>%
-  mutate(across(c(read_count, Length, Pi, raw_reads), as.numeric))
+  mutate(across(c(read_count, Length, Pi, raw_reads, covered_bases), as.numeric))
+
+# Breadth of the best-covered segment (record) of each assembly: for segmented
+# viruses the whole-genome breadth is diluted by segments with few reads.
+seg_breadth_tbl <- info_raw %>%
+  filter(!is.na(Length), Length > 0) %>%
+  group_by(sample_ID, Assembly) %>%
+  summarise(esv_segment_breadth_pct = round(max(covered_bases / Length * 100), 2),
+            .groups = "drop")
 
 pi_tbl <- info_raw %>%
   select(sample_ID, Assembly, Pi) %>%
@@ -344,7 +384,11 @@ asm <- asm_raw %>%
     is_segmented = !is.na(segment_clean) & nzchar(segment_clean),
     esv_breadth_pct = round(covered_bases / Asm_length * 100, 2)
   ) %>%
-  left_join(pi_tbl, by = c("sample_ID", "Assembly"))
+  left_join(pi_tbl, by = c("sample_ID", "Assembly")) %>%
+  left_join(seg_breadth_tbl, by = c("sample_ID", "Assembly")) %>%
+  mutate(esv_segment_breadth_pct = if_else(is_segmented,
+                                           coalesce(esv_segment_breadth_pct, esv_breadth_pct),
+                                           esv_breadth_pct))
 
 # ── Part 3: BLAST validation ──────────────────────────────────────────────────
 blast_empty <- tibble(
@@ -355,7 +399,9 @@ blast_empty <- tibble(
   best_blast_reference = character(),
   blast_genome_cov_pct = numeric(),
   blast_segment_coverage = character(),
-  blast_identity_pct = numeric()
+  blast_identity_pct = numeric(),
+  blast_ref_cov_bp = numeric(),
+  blast_ref_cov_pct = numeric()
 )
 
 # Best contig per sample x taxon: the one with the most query bases aligned to
@@ -483,7 +529,9 @@ if (run_validate) {
         mutate(
           ref_length = coalesce(Length, as.numeric(max_s_end)),
           blast_genome_cov_pct = round(cov_bases / ref_length * 100, 2),
-          blast_segment_coverage = NA_character_
+          blast_segment_coverage = NA_character_,
+          blast_ref_cov_bp = cov_bases,
+          blast_ref_cov_pct = blast_genome_cov_pct
         ) %>%
         select(-cov_bases, -max_s_end, -Length, -ref_length)
     } else {
@@ -535,10 +583,30 @@ if (run_validate) {
         arrange(desc(has_labels), desc(total_bs), .by_group = TRUE) %>%
         slice(1) %>%
         ungroup() %>%
-        inner_join(seg_map %>% distinct(safe_taxon, asm, seg),
+        inner_join(seg_map %>% distinct(safe_taxon, asm, seg, acc),
                    by = c("safe_taxon", "asm")) %>%
-        distinct(sample_ID, safe_taxon, seg) %>%
+        left_join(ref_len_map %>% rename(anchor_length = Length), by = c("acc" = "Accession")) %>%
+        group_by(sample_ID, safe_taxon, seg) %>%
+        summarise(anchor_length = first_numeric(anchor_length), .groups = "drop") %>%
         mutate(expected = TRUE)
+
+      # Reference coverage over all segments: covered bases of the hit segments
+      # over the lengths of the expected and hit segments (missing segments
+      # count with the anchor assembly's segment length).
+      seg_overall <- cov_per_seg %>%
+        select(sample_ID, safe_taxon, seg, cov_bases, Length) %>%
+        full_join(expected_segs %>% select(sample_ID, safe_taxon, seg, anchor_length),
+                  by = c("sample_ID", "safe_taxon", "seg")) %>%
+        group_by(sample_ID, safe_taxon) %>%
+        summarise(
+          blast_ref_cov_bp = sum(cov_bases, na.rm = TRUE),
+          seg_len_total = sum(coalesce(Length, anchor_length), na.rm = TRUE),
+          .groups = "drop"
+        ) %>%
+        mutate(blast_ref_cov_pct = if_else(seg_len_total > 0,
+                                           round(blast_ref_cov_bp / seg_len_total * 100, 2),
+                                           NA_real_)) %>%
+        select(-seg_len_total)
 
       seg_summary <- cov_per_seg %>%
         select(sample_ID, safe_taxon, seg, Matched_Reference, cov_pct) %>%
@@ -571,6 +639,7 @@ if (run_validate) {
           .groups = "drop"
         ) %>%
         left_join(seg_summary, by = c("sample_ID", "safe_taxon")) %>%
+        left_join(seg_overall, by = c("sample_ID", "safe_taxon")) %>%
         mutate(blast_genome_cov_pct = NA_real_)
     } else {
       blast_empty
@@ -580,7 +649,8 @@ if (run_validate) {
       distinct() %>%
       select(sample_ID, safe_taxon, n_contigs, longest_contig_bp,
              best_blast_reference, blast_genome_cov_pct,
-             blast_segment_coverage, blast_identity_pct)
+             blast_segment_coverage, blast_identity_pct,
+             blast_ref_cov_bp, blast_ref_cov_pct)
   } else {
     ref_len_map <- bind_rows(
       db_meta_acc %>% select(Accession, Length),
@@ -627,7 +697,9 @@ if (run_validate) {
       best_blast_reference = NA_character_,
       blast_genome_cov_pct = NA_real_,
       blast_segment_coverage = NA_character_,
-      blast_identity_pct = NA_real_
+      blast_identity_pct = NA_real_,
+      blast_ref_cov_bp = NA_real_,
+      blast_ref_cov_pct = NA_real_
     )
 }
 
@@ -637,6 +709,7 @@ genome_stats <- tibble(
   safe_taxon = character(),
   genome_coverage = character(),
   genome_len = numeric(),
+  genome_trimmed_len = numeric(),
   genome_N_pct = numeric(),
   genome_mean_depth = numeric(),
   genome_n_contigs = numeric(),
@@ -652,6 +725,15 @@ if (run_validate && length(scaffold_files) > 0) {
   }) %>%
     mutate(across(c(genome_len, n_count, ref_cov_pct, mean_depth, n_contigs_used,
                     ref_length), as.numeric))
+  # Stats files from before full-length genomes have no trimmed_len /
+  # ref_called_bp: their genomes are trimmed and called = non-N bases.
+  if (!"trimmed_len" %in% names(scaffold_raw)) scaffold_raw$trimmed_len <- NA_character_
+  if (!"ref_called_bp" %in% names(scaffold_raw)) scaffold_raw$ref_called_bp <- NA_character_
+  scaffold_raw <- scaffold_raw %>%
+    mutate(
+      trimmed_len   = coalesce(as.numeric(trimmed_len), genome_len),
+      ref_called_bp = coalesce(as.numeric(ref_called_bp), genome_len - n_count)
+    )
 
   if (nrow(scaffold_raw) > 0) {
     genome_stats <- scaffold_raw %>%
@@ -672,9 +754,10 @@ if (run_validate && length(scaffold_files) > 0) {
         genome_mean_depth = if (sum(genome_len) > 0)
           round(sum(mean_depth * genome_len) / sum(genome_len), 1) else NA_real_,
         genome_overall_pct = if (sum(ref_length, na.rm = TRUE) > 0)
-          min(100, sum(genome_len - n_count) / sum(ref_length, na.rm = TRUE) * 100)
+          min(100, sum(ref_called_bp) / sum(ref_length, na.rm = TRUE) * 100)
           else NA_real_,
         genome_len = sum(genome_len),
+        genome_trimmed_len = sum(trimmed_len),
         genome_n_contigs = sum(n_contigs_used),
         .groups = "drop"
       )
@@ -699,12 +782,13 @@ overview <- asm %>%
     genome_length_bp = Asm_length,
     esv_read_count = read_count,
     esv_covered_bases = covered_bases,
-    esv_breadth_pct,
+    esv_breadth_pct, esv_segment_breadth_pct,
     esv_ani = avg_read_identity,
     pi, RPKMF, RPM, RPKMR,
     assembly_status, n_contigs, longest_contig_bp,
     best_blast_reference, blast_genome_cov_pct,
-    blast_segment_coverage, blast_identity_pct
+    blast_segment_coverage, blast_identity_pct,
+    blast_ref_cov_bp, blast_ref_cov_pct
   )
 
 blast_only_rows <- overview[0, ]
@@ -733,6 +817,7 @@ if (run_validate && nrow(blast_stats) > 0) {
       esv_read_count = NA_real_,
       esv_covered_bases = NA_real_,
       esv_breadth_pct = NA_real_,
+      esv_segment_breadth_pct = NA_real_,
       esv_ani = NA_real_,
       pi = NA_real_,
       RPKMF = NA_real_,
@@ -741,7 +826,8 @@ if (run_validate && nrow(blast_stats) > 0) {
       assembly_status = "blast_only_detection",
       n_contigs, longest_contig_bp,
       best_blast_reference, blast_genome_cov_pct,
-      blast_segment_coverage, blast_identity_pct
+      blast_segment_coverage, blast_identity_pct,
+      blast_ref_cov_bp, blast_ref_cov_pct
     )
 }
 
@@ -803,20 +889,25 @@ overview <- overview %>%
   ungroup() %>%
   mutate(
     esv_verdict = case_when(
-      is.na(esv_read_count)                       ~ NA_character_,
+      is.na(esv_read_count)                         ~ NA_character_,
       esv_read_count >= esv_min_reads &
-        esv_breadth_pct >= esv_min_breadth_pct    ~ "supported",
-      TRUE                                        ~ "weak"
+        RPM >= esv_min_rpm &
+        esv_segment_breadth_pct >= esv_min_breadth_pct ~ "supported",
+      TRUE                                          ~ "weak"
     ),
+    # BLAST: artefact first (the best contig is mostly non-viral), then
+    # coverage of the reference by all contigs of the taxon, or a polished
+    # genome of at least partial coverage.
     blast_verdict = case_when(
-      !run_validate                               ~ NA_character_,
+      !run_validate                                 ~ NA_character_,
       assembly_status %in% "tblastx_only_detection" ~ NA_character_,
-      is.na(contig_aln_bp)                        ~ "no_contig",
-      contig_aln_bp >= contig_min_aln_bp &
-        contig_aln_pct >= contig_min_aln_pct      ~ "confirmed",
+      is.na(contig_aln_bp)                          ~ "no_contig",
       contig_aln_bp < artefact_max_aln_bp |
-        contig_aln_pct < artefact_max_aln_pct     ~ "artefact_suspected",
-      TRUE                                        ~ "inconclusive"
+        contig_aln_pct < artefact_max_aln_pct       ~ "artefact_suspected",
+      coalesce(blast_ref_cov_bp >= blast_min_ref_bp, FALSE) |
+        coalesce(blast_ref_cov_pct >= blast_min_ref_pct, FALSE) |
+        coalesce(genome_overall_pct >= genome_partial_pct, FALSE) ~ "confirmed",
+      TRUE                                          ~ "inconclusive"
     ),
     # One coverage column: "<pct>%" for non-segmented viruses, the per-segment
     # string ("segL:14%;segM:66%;segS:no_hit") for segmented ones.
@@ -826,20 +917,24 @@ overview <- overview %>%
               paste0(blast_genome_cov_pct, "%"))
     ),
     genome_assessment = case_when(
-      is.na(genome_len)                                 ~ NA_character_,
-      genome_len == 0                                   ~ "no_genome",
-      genome_overall_pct >= genome_complete_pct &
-        !str_detect(coalesce(blast_segment_coverage, ""), "no_hit") ~ "complete",
-      genome_overall_pct >= genome_partial_pct          ~ "partial",
-      TRUE                                              ~ "fragmented"
+      is.na(genome_len)  ~ NA_character_,
+      genome_len == 0    ~ "no_genome",
+      TRUE               ~ coverage_grade(genome_overall_pct, coalesce(blast_segment_coverage, ""))
+    ),
+    blast_assessment = case_when(
+      is.na(blast_ref_cov_pct) | blast_verdict %in% c("no_contig", "artefact_suspected") ~ NA_character_,
+      TRUE ~ coverage_grade(blast_ref_cov_pct, coalesce(blast_segment_coverage, ""))
     ),
     verdict = case_when(
       assembly_status %in% "tblastx_only_detection" ~ "protein_hit_only",
-      blast_verdict %in% "confirmed"              ~ "confirmed",
-      esv_verdict %in% "supported"                ~ "probable",
+      blast_verdict %in% "confirmed" |
+        esv_verdict %in% "supported"                ~ "confirmed",
+      blast_verdict %in% "inconclusive" |
+        coalesce(esv_read_count >= esv_min_reads &
+                 esv_segment_breadth_pct >= esv_probable_min_breadth_pct, FALSE) ~ "probable",
       is.na(esv_verdict) &
-        blast_verdict %in% "artefact_suspected"   ~ "artefact_suspected",
-      TRUE                                        ~ "weak"
+        blast_verdict %in% "artefact_suspected"     ~ "artefact_suspected",
+      TRUE                                          ~ "weak"
     ),
     flags = collapse_flags(
       if_else(is.na(esv_read_count) & !assembly_status %in% "tblastx_only_detection",
@@ -851,13 +946,19 @@ overview <- overview %>%
     ),
     esv_flags = collapse_flags(
       flag_below("low_reads", esv_read_count, esv_min_reads),
-      flag_below("low_breadth", esv_breadth_pct, esv_min_breadth_pct, "%"),
+      flag_below("low_rpm", RPM, esv_min_rpm),
+      flag_below("low_breadth", esv_segment_breadth_pct, esv_min_breadth_pct, "%"),
       flag_below("divergent", round(esv_ani * 100, 2),
                  esv_divergent_identity_pct, "%")
     ),
     blast_flags = collapse_flags(
       flag_below("short_alignment", contig_aln_bp, artefact_max_aln_bp, "bp"),
       flag_below("low_contig_cov", contig_aln_pct, artefact_max_aln_pct, "%"),
+      if_else(coalesce(blast_ref_cov_bp < blast_min_ref_bp &
+                         blast_ref_cov_pct < blast_min_ref_pct, FALSE),
+              paste0("low_ref_cov(", blast_ref_cov_bp, "bp<", blast_min_ref_bp, "bp;",
+                     blast_ref_cov_pct, "%<", blast_min_ref_pct, "%)"),
+              NA_character_),
       flag_below("divergent", blast_identity_pct,
                  blast_divergent_identity_pct, "%")
     )
@@ -867,11 +968,11 @@ overview <- overview %>%
   select(
     # Findings
     sample_ID, virus_name, verdict, esv_verdict, blast_verdict,
-    genome_assessment, flags,
+    blast_assessment, genome_assessment, flags,
     # Mapping evidence (EsViritu)
-    esv_read_count, esv_breadth_pct, RPM, esv_flags,
+    esv_read_count, esv_breadth_pct, esv_segment_breadth_pct, RPM, esv_flags,
     # De novo evidence (SPAdes + BLAST)
-    blast_coverage, n_contigs, blast_flags,
+    blast_coverage, blast_ref_cov_bp, n_contigs, blast_flags,
     # Combined genome (contigs per taxon, polished with reads)
     genome_coverage, genome_N_pct, genome_mean_depth,
     # Protein-level rescue (tblastx, experimental)
@@ -883,7 +984,7 @@ overview <- overview %>%
     assembly_status, best_blast_reference, longest_contig_bp,
     contig_aln_bp, contig_aln_pct, blast_identity_pct,
     # Technical detail: combined genome
-    genome_len, genome_n_contigs,
+    genome_len, genome_trimmed_len, genome_n_contigs,
     tblastx_reference,
     # Taxonomy
     family, genus, species, subspecies,

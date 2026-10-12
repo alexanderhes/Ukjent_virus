@@ -16,6 +16,16 @@
  *   Single paired-end run with --sensitive-local --no-discordant --no-mixed.
  *   Unmapped pairs are written directly via --un-conc-gz. Faster (3–5×) and
  *   produces synchronised R1/R2 output without a re-pairing step.
+ *   Only concordant pairs are removed, so two bowtie2 defaults are widened:
+ *     --dovetail : mates that extend past each other count as concordant.
+ *                  Short inserts (~140 bp with 2x301 reads) give such pairs,
+ *                  in local mode also through soft-clipped ends.
+ *     -X 1000    : maximum fragment length 1000 bp (default 500). In local
+ *                  mode bowtie2 includes soft-clipped bases in the fragment
+ *                  length, and some 2x301 libraries have inserts > 500 bp.
+ *   Without them, 8-55% of the pairs left after host filtering in two test
+ *   samples still mapped concordantly to human; no pair EsViritu assigned to
+ *   a virus was among them.
  *
  * High-sensitivity mode (sensitive_host_filter = true):
  *   bowtie2 is run independently on R1 and R2 (unpaired, --very-sensitive-local)
@@ -118,6 +128,8 @@ process HOST_FILTER {
         # ── Single paired-end run; unmapped pairs written via --un-conc-gz ──────
         # --no-discordant and --no-mixed prevent bowtie2 from attempting solo-read
         # alignments when a pair fails, keeping --un-conc-gz as the sole output path.
+        # --dovetail and -X 1000 widen what counts as a concordant (host) pair; see
+        # the header.
         # The '%' in the --un-conc-gz path is replaced by bowtie2 with the mate
         # number (1 or 2), giving deterministic output names. (Without a '%',
         # bowtie2 inserts .1/.2 *before the final dot*, e.g. foo.fastq.1.gz — not
@@ -130,6 +142,8 @@ process HOST_FILTER {
             -p ${task.cpus} \\
             --no-discordant \\
             --no-mixed \\
+            --dovetail \\
+            -X 1000 \\
             --un-conc-gz ${meta.id}_unfilt.R%.fastq.gz \\
             --no-unal \\
             -S /dev/null \\

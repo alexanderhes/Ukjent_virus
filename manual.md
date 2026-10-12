@@ -185,10 +185,14 @@ sample2-UV;/path/to/raw_data/sample2-UV
 | `--host_contig_max_pct` | `50` | Remove a contig when at least this % of its length is covered by host BLAST hits |
 | `--host_contig_min_identity` | `90` | Minimum identity (%) of host BLAST hits counted towards that coverage |
 | `--scaffold` | `true` | Combine the contigs of each taxon (or segment) into one read-polished genome per sample (runs only with `--validate`) |
-| `--genome_complete_pct` | `90` | `genome_assessment` = `complete` when at least this % of the reference is called |
-| `--genome_partial_pct` | `50` | `genome_assessment` = `partial` when at least this %; below = `fragmented` |
-| `--polish_rounds` | `2` | Read-mapping polish iterations |
-| `--polish_min_depth` | `5` | Minimum read depth to call a base; positions below become `N` |
+| `--genome_complete_pct` | `90` | Coverage grade `complete` (`genome_assessment`: % of the reference called in the polished genome; `blast_assessment`: % covered by contigs) |
+| `--genome_high_pct` | `70` | Coverage grade `high` |
+| `--genome_partial_pct` | `50` | Coverage grade `partial`; a polished genome at least this complete also makes `blast_verdict = confirmed` |
+| `--genome_low_pct` | `30` | Coverage grade `low`; below = `fragmented` |
+| `--scaffold_max_overhang` | `300` | Maximum contig bases added beyond a reference end (contig overhang); longer overhangs are rejected as likely chimeras. `0` = no overhangs |
+| `--polish_rounds` | `1` | Read-mapping polish iterations. `0` = contigs only (every position outside the contigs becomes `N`) |
+| `--polish_contig_bases` | `fallback` | Where the reads decide. `fallback`: everywhere except contig positions with fewer than `--polish_min_depth` reads, which keep the contig base; `keep`: outside the contigs only (every contig base kept); `reads`: everywhere (`N` below `--polish_min_depth`, also in contigs) |
+| `--polish_min_depth` | `5` | Minimum read depth for the reads to decide a base (the most frequent read base). Below it: the contig base where a contig covers the position (`fallback`), otherwise `N` |
 
 ### Overview verdict thresholds
 
@@ -197,16 +201,18 @@ Thresholds for the `verdict`, `esv_verdict` and `blast_verdict` columns and the 
 | Parameter | Default | Description |
 |---|---|---|
 | `--verdict_esv_min_reads` | `10` | Mapping evidence: minimum EsViritu read count for `esv_verdict = supported` |
-| `--verdict_esv_min_breadth_pct` | `5` | Mapping evidence: minimum EsViritu breadth of coverage (%) for `esv_verdict = supported` |
-| `--verdict_contig_min_aln_bp` | `300` | De novo evidence: minimum aligned bases on the best contig for `blast_verdict = confirmed` |
-| `--verdict_contig_min_aln_pct` | `50` | De novo evidence: minimum % of the best contig aligned for `blast_verdict = confirmed` |
+| `--verdict_esv_min_rpm` | `10` | Mapping evidence: minimum reads per million raw reads (`RPM`) for `esv_verdict = supported` |
+| `--verdict_esv_min_breadth_pct` | `30` | Mapping evidence: minimum EsViritu breadth of coverage (%) for `esv_verdict = supported`; for segmented viruses the best-covered segment (`esv_segment_breadth_pct`) |
+| `--verdict_esv_probable_min_breadth_pct` | `5` | `verdict = probable` when EsViritu has ≥ `--verdict_esv_min_reads` reads and at least this breadth (%), but does not reach `supported` |
+| `--verdict_blast_min_ref_bp` | `1000` | De novo evidence: `blast_verdict = confirmed` when the taxon's contigs cover at least this many reference bases ... |
+| `--verdict_blast_min_ref_pct` | `30` | ... or at least this % of the reference (all segments together), or the polished genome covers ≥ `--genome_partial_pct` |
 | `--verdict_artefact_max_aln_bp` | `200` | De novo evidence: best contig with fewer aligned bases than this is `artefact_suspected` |
 | `--verdict_artefact_max_aln_pct` | `20` | De novo evidence: best contig with a smaller aligned fraction (%) than this is `artefact_suspected` |
 | `--verdict_esv_divergent_identity_pct` | `90` | Flag only: `esv_flags` gets `divergent` when EsViritu read identity (%) is below this |
 | `--verdict_blast_divergent_identity_pct` | `90` | Flag only: `blast_flags` gets `divergent` when BLAST identity (%) is below this |
 | `--verdict_recurrent_min_samples` | `2` | Flag only: `flags` gets `in_<k>/<N>_samples` when the taxon is reported in at least this many samples |
 
-The thresholds above also drive the flags: `esv_flags` `low_reads` / `low_breadth` use the two `verdict_esv_*` minimums, and `blast_flags` `short_alignment` / `low_contig_cov` use the two `verdict_artefact_*` maximums.
+The thresholds above also drive the flags: `esv_flags` `low_reads` / `low_rpm` / `low_breadth` use the `verdict_esv_min_*` thresholds, `blast_flags` `short_alignment` / `low_contig_cov` use the two `verdict_artefact_*` maximums, and `low_ref_cov` the two `verdict_blast_min_ref_*` minimums.
 
 ### Resources
 
@@ -230,7 +236,7 @@ Raw reads (R1 + R2)
  FASTP_DEDUP          deduplication on trimmed reads
        │               (~40–50% of trimmed reads are duplicates)
        ▼
- HOST_FILTER          bowtie2 --sensitive-local (paired-end mode, default)
+ HOST_FILTER          bowtie2 --sensitive-local --dovetail -X 1000 (paired-end mode, default)
        │               removes human T2T + PhiX reads from trimmed, deduplicated reads
        ▼
  ESVIRITU             virus detection 
@@ -243,7 +249,8 @@ Raw reads (R1 + R2)
  SUMMARIZE_READ_STATS combine across all samples         SPADES_ASSEMBLY       de novo assembly (metaSPAdes)
  SUMMARIZE_ESV        batch detection summary            BLASTN_VALIDATE       BLAST contigs vs species DB
  MAKE_OVERVIEW_TABLE  37-column overview TSV             SUMMARIZE_VALIDATION  per-sample BLAST summary
-                                                         VISUALIZE_VALIDATION  per-sample contig PDF
+                                                         VISUALIZE_VALIDATION  per-sample contig + artefact PDFs
+                                                         VISUALIZE_GENOMES     per-sample genome + coverage PDFs
 ```
 
 ### Host filtering strategy
@@ -256,7 +263,9 @@ The BLAST database does not have to be built by hand. If no database exists at `
 makeblastdb -in host_ref.fasta -dbtype nucl -out <host_dir>/blastdb/host_ref
 ```
 
-By default, bowtie2 is run in **paired-end mode** with `--sensitive-local --no-discordant --no-mixed`. Unmapped pairs are written directly via `--un-conc-gz`, producing synchronised R1/R2 output in a single pass.
+By default, bowtie2 is run in **paired-end mode** with `--sensitive-local --no-discordant --no-mixed --dovetail -X 1000`. Unmapped pairs are written directly via `--un-conc-gz`, producing synchronised R1/R2 output in a single pass.
+
+Only pairs that align **concordantly** to the host are removed, so two bowtie2 defaults are widened. `--dovetail` counts pairs whose mates extend past each other as concordant; short inserts give such pairs, in local mode also through soft-clipped read ends. `-X 1000` raises the maximum fragment length from 500 to 1000 bp: in local mode bowtie2 includes soft-clipped bases in the fragment length (a 140 bp insert can measure ~460 bp), and some 2×301 libraries have inserts longer than 500 bp. Without these options, 8–55% of the pairs left after host filtering in two test samples still aligned concordantly to human (rRNA and other human sequence); none of them were among the reads EsViritu assigned to a virus. Expect a higher host-removal percentage than in runs before this change.
 
 Read order is `FASTP_TRIM` → `FASTP_DEDUP` → `HOST_FILTER`. Deduplicating before host filtering means bowtie2, the most compute-intensive pre-processing step, aligns fewer reads. Host filtering runs **after** trimming for a correctness reason: on untrimmed short-insert libraries (e.g. 2×301 bp reads from ~140 bp fragments) both mates read into adapter; in local mode their soft-clipped alignments extend past each other ("dovetail"), which bowtie2 does not count as concordant, so such human pairs were kept as non-host. In one test sample, re-filtering the old host-filtered reads with dovetailing allowed removed a further 78% as human. Trimming first removes the adapter read-through.
 
@@ -292,7 +301,10 @@ results/
     │   ├── <sample>_overview.tsv          # Per-sample 37-column summary
     │   └── esv_staged.overview.tsv        # All samples combined
     └── validation/              # (--validate only)
-        ├── <sample>_validation_contigs.pdf    # Contig alignment plot (multi-page PDF)
+        ├── <sample>_validation_contigs.pdf    # Contig alignment plot, contigs used for the genomes
+        ├── <sample>_validation_artefacts.pdf  # Contig alignment plot, likely artefact contigs only
+        ├── <sample>_validation_genomes.pdf    # (--scaffold) full-length genomes on their references
+        ├── <sample>_genome_coverage.pdf       # (--scaffold) depth, consensus and contig tracks per genome
         └── <sample>/
             ├── <sample>_validation_summary.tsv  # All BLAST hits for the sample
             ├── assembly/        # SPAdes contigs, host-filtered contigs (*_query.nohost.fasta),
@@ -300,8 +312,10 @@ results/
             ├── blast/           # Per-species BLAST TSVs + ref_lengths + has_contigs
             ├── reads/           # Per-species R1/R2 FASTQs extracted for assembly
             └── genomes/         # (--scaffold) combined, read-polished genomes
-                ├── <sample>_<taxon>[__seg<label>].fasta   # one per virus (segment)
-                ├── <sample>_genomes.fasta                  # all genomes of the sample
+                ├── <sample>_<taxon>[__seg<label>].fasta          # one per virus (segment), full length
+                ├── <sample>_<taxon>[__seg<label>]_trimmed.fasta  # the same without end Ns
+                ├── <sample>_genomes.fasta                         # all full-length genomes of the sample
+                ├── <sample>_genomes_trimmed.fasta                 # all trimmed genomes
                 ├── <sample>_genome_stats.tsv               # statistics per genome
                 └── <sample>_scaffold_contigs.tsv           # which contigs were used
         genome_summary.tsv       # (--scaffold) statistics of all genomes in the run
@@ -317,7 +331,27 @@ The primary result file. See [Section 11](#11-overview-table-columns) for a full
 
 ### `validation/<sample>_validation_contigs.pdf`
 
-A multi-page PDF with one page per detected viral species. Each contig assembled by SPAdes is drawn as a horizontal bar spanning its aligned region on the best reference genome. Bars are coloured by matched reference accession and ordered by alignment length (longest first). The x-axis spans 0 to the true reference genome length.
+A multi-page PDF with one page per detected viral species. Each contig assembled by SPAdes (after the host contig filter) is drawn as a horizontal bar spanning its best BLAST hit on the reference genome. Bars are coloured by matched reference accession and ordered by alignment length (longest first). The x-axis spans 0 to the true reference genome length; segmented viruses get one panel per segment.
+
+Only contigs that pass the artefact thresholds are shown: their BLAST hits cover at least `--verdict_artefact_max_aln_pct` % (default 20) and `--verdict_artefact_max_aln_bp` bp (default 200) of the contig. These are exactly the contigs `SCAFFOLD_GROUPS` uses for the genomes.
+
+### `validation/<sample>_validation_artefacts.pdf`
+
+The same plot for the likely artefact contigs only (those below either threshold), which are left out of the genomes. Each row label gives the contig's aligned share (`aligned bp of contig bp, %`). Typical artefacts are long bacterial or human rRNA contigs whose only match is a short stretch at the end of a viral reference. A single blank page means the sample had none.
+
+### `validation/<sample>_validation_genomes.pdf` (`--scaffold`)
+
+One page per species, laid out like the contig plot, with one bar per full-length genome (one panel per segment). Every genome base is drawn at its reference position, which `POLISH_SCAFFOLD` carries through all steps (inserted bases are not drawn; a reference position deleted in the genome takes the colour of the base before it). Bases are coloured by source: dark blue = contig base kept because fewer than `--polish_min_depth` reads cover it, light blue = read-called base inside a contig, orange = read-called base outside the contigs (what the reads added to the assembly), grey = `N` (including the end `N`s where the genome does not reach the reference ends). Dotted lines mark the reference ends; bars beyond them are contig overhangs. The row label gives the full and trimmed length, % of the reference called, `N` inside the genome and at its ends, mean depth and any overhangs.
+
+### `validation/<sample>_genome_coverage.pdf` (`--scaffold`)
+
+One page per genome (per segment), three tracks on the reference axis:
+
+- **Read depth** that decided each genome base: the base counts of the polishing mapping (last round), drawn at the reference position of the base; an inserted base takes the depth of the base before it. This is exactly the depth the consensus was called from (0 with `--polish_rounds 0`, where no reads are used). The dashed line marks `--polish_min_depth`.
+- **Consensus** by source: contig bases kept (too few reads) dark blue, read-called bases inside a contig light blue, read-called bases outside the contigs orange, `N` black (single `N`s show as lines).
+- **Contigs**: where `SCAFFOLD_MINIMAP2` aligned each contig on the reference, i.e. the contigs the genome was built from (aligned part only; an overhang shows in the consensus track beyond the dotted reference end).
+
+Dotted lines on all tracks mark the reference ends.
 
 ### `validation/<sample>/<sample>_validation_summary.tsv`
 
@@ -342,7 +376,7 @@ All BLAST hits across all species for the sample. Columns:
 
 ### `validation/<sample>/genomes/` and `validation/genome_summary.tsv`
 
-Polished genomes are in `validation/<sample>/genomes/<sample>_<group_id>.fasta` (one per virus, or per segment), with headers `<sample>|<taxon>|<segment>|<reference>`; `<sample>_genomes.fasta` holds all of them. `<sample>_genome_stats.tsv` (all samples combined in `validation/genome_summary.tsv`) has one row per genome:
+Polished genomes are in `validation/<sample>/genomes/<sample>_<group_id>.fasta` (one per virus, or per segment), with headers `<sample>|<taxon>|<segment>|<reference>`; `<sample>_genomes.fasta` holds all of them. These are **full length**: end `N`s are kept, so a genome spans its whole reference (plus any contig overhangs) and its `N`s show how much is missing. `<sample>_<group_id>_trimmed.fasta` and `<sample>_genomes_trimmed.fasta` hold the same genomes without leading/trailing `N`s (e.g. for GenBank submission, which does not accept end `N`s). `<sample>_genome_stats.tsv` (all samples combined in `validation/genome_summary.tsv`) has one row per genome:
 
 | Column | Description |
 |---|---|
@@ -350,9 +384,13 @@ Polished genomes are in `validation/<sample>/genomes/<sample>_<group_id>.fasta` 
 | `ref_accession`, `ref_length` | Reference the contigs were ordered against |
 | `n_contigs` / `n_contigs_used` | Contigs in the group / contigs minimap2 aligned to the reference |
 | `contig_bp`, `contig_cov_pct` | Reference bases covered by contigs, and as % of the reference |
-| `genome_len`, `n_count`, `N_pct` | Final polished genome length, `N` count and `N` % |
-| `ref_cov_pct` | Called (non-`N`) bases as % of the reference length, capped at 100 |
-| `mean_depth` | Mean read depth over the genome's called positions (depth ≥ `--polish_min_depth`) in the final polish round |
+| `genome_len`, `n_count`, `N_pct` | Full-length genome: length, `N` count and `N` % (end `N`s included) |
+| `ref_cov_pct` | `ref_called_bp` as % of the reference length |
+| `mean_depth` | Mean read depth (base counts of the last polishing round) over the positions with depth ≥ `--polish_min_depth` (0 with `--polish_rounds 0`) |
+| `trimmed_len` | Length of the trimmed genome (end `N`s removed) |
+| `n_end_5p`, `n_end_3p`, `n_internal` | `N`s trimmed off the 5' / 3' end, and `N`s left inside the trimmed genome |
+| `ref_called_bp` | Reference positions with a called (non-`N`) base. Overhang bases and bases inserted relative to the reference are not counted, so a genome with many insertions does not exceed its reference |
+| `overhang_5p`, `overhang_3p` | Contig bases added beyond the reference start / end |
 
 ---
 
@@ -372,12 +410,13 @@ Enable with `--validate`. The current sub-workflow runs once per sample on the t
 
    **Protein-level rescue** (`--tblastx_rescue`, on by default, experimental): contigs with no blastn hit, or whose hits cover less than `--verdict_artefact_max_aln_pct` % / `--verdict_artefact_max_aln_bp` bp of the contig, are searched with `tblastx` (both sides translated in six frames) against the same database, to catch viruses too divergent for a nucleotide search. A candidate passes when its hits to the best accession (highest total bitscore) cover at least the same thresholds. All candidates with a protein hit are listed in `blast/<sample>_tblastx.tsv` (raw HSPs in `<sample>_tblastx_raw.tsv`); passing hits appear in the overview (see section 11).
 
-3. **Visualise** (`VISUALIZE_VALIDATION`): one PDF page per matched taxon showing contig coverage of the reference genome.
+3. **Visualise** (`VISUALIZE_VALIDATION`): one PDF page per matched taxon showing contig coverage of the reference genome, split into contigs that pass the artefact thresholds (`<sample>_validation_contigs.pdf`) and likely artefacts (`<sample>_validation_artefacts.pdf`). With `--scaffold`, `VISUALIZE_GENOMES` plots the polished genomes (`<sample>_validation_genomes.pdf`) and a depth/consensus/contig coverage page per genome (`<sample>_genome_coverage.pdf`); see section 9.
 
 4. **Combine contigs per taxon** (`--scaffold`, on by default). The contigs of one virus in a sample are joined into one genome against a reference, then corrected with the sample's reads:
    - `SCAFFOLD_GROUPS` first leaves out artefact contigs: a contig is only scaffolded when its BLAST hits cover at least `--verdict_artefact_max_aln_pct` % (default 20) of its length and at least `--verdict_artefact_max_aln_bp` (default 200) bp — the same thresholds the overview uses for `artefact_suspected`. This stops long non-viral contigs (e.g. bacterial rRNA) whose only match is a short stretch at the end of a viral reference from being placed on that virus. The decision per contig is in `validation/<sample>/genomes/<sample>_scaffold_contigs.tsv`. It then groups the remaining contigs per taxon, or per segment for segmented viruses (segment labels harmonised as in the overview table; contigs on an accession without a segment label form their own `?` group). Each group's reference is the accession with the highest total BLAST bitscore in the group, so every segment of a reassortant keeps its own reference.
-   - `SCAFFOLD_MINIMAP2` aligns the contigs to the reference (`minimap2 -x map-ont -k 11 -w 5`, which aligns contigs only ~80–86% identical to their reference end to end; the assembly preset `asm20` dropped much of such contigs) and builds a contig consensus in reference coordinates with `samtools consensus`; overlapping contigs merge. Gaps and genome ends are filled with the reference (lowercase) to make a polishing template.
-   - `POLISH_SCAFFOLD` maps the sample's host-filtered reads to all templates of the sample at once (`bowtie2 --local`) and calls a new consensus (`samtools consensus`), for `--polish_rounds` rounds; rounds after the first use only the read pairs that mapped in round 1. Positions with fewer than `--polish_min_depth` reads become `N`, so every base in the final genome is supported by reads, never copied from the reference. End `N`s are trimmed.
+   - `SCAFFOLD_MINIMAP2` aligns the contigs to the reference (`minimap2 -x map-ont -k 11 -w 5`, which aligns contigs only ~80–86% identical to their reference end to end; the assembly preset `asm20` dropped much of such contigs) and builds a contig consensus along the reference with `samtools consensus`; overlapping contigs merge. Contig insertions relative to the reference are kept (`--mark-ins`) and contig deletions dropped, so the template carries the contig sequence itself (uppercase). Gaps and genome ends are filled with the reference (lowercase) to make a polishing template (`bin/build_scaffold_template.py`), and the reference position of every template base is recorded and carried through polishing.
+     **Contig overhangs.** References often lack the outermost UTR bases, so a contig can extend beyond a reference end; minimap2 soft-clips those bases. They are added to the template as contig bases when all of these hold: the contig's alignment reaches within 10 bp of that reference end (otherwise the clip is a divergent end, not an overhang); no host BLAST hit (≥ `--host_contig_min_identity` %, from `FILTER_HOST_CONTIGS`) covers ≥ 20 bp or half of the overhang (contigs with human rRNA ends); after removing a terminal run of ≥ 10 identical bases (an assembly artefact, e.g. a poly-U tract) at most `--scaffold_max_overhang` bp remain (longer ones are rejected as likely chimeras). The longest passing overhang per end is used.
+   - `POLISH_SCAFFOLD` maps the sample's host-filtered reads to all templates of the sample at once (one `bowtie2 --local` index, so each read goes to the template it fits best), for `--polish_rounds` rounds (default 1); rounds after the first use only the read pairs that mapped in round 1. **The reads decide the consensus base**: wherever at least `--polish_min_depth` reads cover a position, the genome gets the most frequent read base (a deletion if deletions are most frequent; the template base wins ties). There is no 75% threshold and there are no IUPAC codes: a mixed position gets its majority base. Read insertions carried by the majority of the reads are added. Base counts come from `samtools mpileup` of the round's mapping, counted like `samtools consensus` (no quality filters, both overlapping mates, deletions included in the depth). Below `--polish_min_depth`, a contig base is kept (`--polish_contig_bases fallback`), so a contig assembled from few reads is not lost; outside the contigs the position becomes `N`, so reference bases never reach the genome. Reads decide inside the contigs too because SPAdes contigs can carry a minority allele: metaSPAdes picks one path through a variant bubble, not the majority (in a test sample, 23 contig bases were carried by only 1–21% of the reads mapped to the contig itself), and contig ends are often assembled from very few reads. `--polish_contig_bases keep` keeps every contig base, `reads` also turns contig bases below `--polish_min_depth` into `N`, and `--polish_rounds 0` skips the reads (contigs only); these are mainly for comparisons. Each genome is written full length and trimmed (see section 9).
 
    Because the template covers the whole reference (gaps and both ends filled with reference sequence), reads can extend the genome beyond the assembled contigs wherever the sample's virus is similar enough to the reference for them to align; elsewhere the genome stays `N`. RagTag and ABACAS were tested as alternatives (October 2026): with their templates ending at the first/last contig the genomes were shorter, and RagTag placed long non-viral contigs on a virus from a short match.
 
@@ -425,12 +464,13 @@ Mapping evidence (EsViritu) and de novo evidence (SPAdes + BLAST) are judged sep
 
 | Column | Description |
 |---|---|
-| `verdict` | Combined call: `confirmed` (`blast_verdict` confirmed) > `probable` (`esv_verdict` supported) > `artefact_suspected` (BLAST-only hit judged an artefact) > `weak` (everything else) |
-| `esv_verdict` | Mapping evidence: `supported` if `esv_read_count` ≥ `verdict_esv_min_reads` and `esv_breadth_pct` ≥ `verdict_esv_min_breadth_pct`, otherwise `weak`. `NA` for BLAST-only rows |
-| `blast_verdict` | De novo evidence, judged on the best contig (`contig_aln_bp`, `contig_aln_pct`): `confirmed` (≥ `verdict_contig_min_aln_bp` bp and ≥ `verdict_contig_min_aln_pct` % of the contig aligned), `artefact_suspected` (< `verdict_artefact_max_aln_bp` bp or < `verdict_artefact_max_aln_pct` % aligned: a short viral match inside a longer, likely non-viral contig), `inconclusive` (in between), `no_contig` (no contig assigned to this taxon). `NA` without `--validate` |
+| `verdict` | Combined call: `confirmed` (`esv_verdict` supported **or** `blast_verdict` confirmed) > `probable` (`blast_verdict` inconclusive, or ≥ `verdict_esv_min_reads` reads with breadth ≥ `verdict_esv_probable_min_breadth_pct`) > `artefact_suspected` (BLAST-only hit judged an artefact) > `weak` (everything else) |
+| `esv_verdict` | Mapping evidence: `supported` if `esv_read_count` ≥ `verdict_esv_min_reads`, `RPM` ≥ `verdict_esv_min_rpm` and `esv_segment_breadth_pct` ≥ `verdict_esv_min_breadth_pct`, otherwise `weak`. `NA` for BLAST-only rows |
+| `blast_verdict` | De novo evidence: `no_contig` (no contig assigned to this taxon); `artefact_suspected` when the best contig (most aligned bases) has < `verdict_artefact_max_aln_bp` bp or < `verdict_artefact_max_aln_pct` % aligned (a short viral match inside a longer, likely non-viral contig); `confirmed` when the taxon's contigs cover ≥ `verdict_blast_min_ref_bp` reference bases or ≥ `verdict_blast_min_ref_pct` % of the reference (`blast_ref_cov_bp`, `blast_coverage`), or the polished genome covers ≥ `genome_partial_pct` %; `inconclusive` otherwise. `NA` without `--validate` |
+| `blast_assessment` | Coverage grade of the reference by contigs (all segments together): `complete` (≥ `genome_complete_pct`), `high` (≥ `genome_high_pct`), `partial` (≥ `genome_partial_pct`), `low` (≥ `genome_low_pct`), `fragmented` (below). `NA` without a contig or for artefacts. Counts only the contigs on the best reference accession (per segment), so contigs closest to another record of the same taxon are not included |
 | `flags` | General flags: `blast_only` (no EsViritu hit) and `in_<k>/<N>_samples` when the taxon is reported in at least `--verdict_recurrent_min_samples` samples of the batch (informational: a real outbreak and a shared contaminant both recur). Empty when no flag applies |
-| `esv_flags` | Reasons behind `esv_verdict`, each with the value and the threshold it failed: `low_reads(5<10)`, `low_breadth(2.35%<5%)`, `divergent(86.57%<90%)` (EsViritu read identity). Empty when none apply |
-| `blast_flags` | Reasons behind `blast_verdict`, each with the value and the threshold it failed: `short_alignment(81bp<200bp)`, `low_contig_cov(1.9%<20%)` (best contig), `divergent(82.18%<90%)` (BLAST identity). Empty when none apply |
+| `esv_flags` | Reasons behind `esv_verdict`, each with the value and the threshold it failed: `low_reads(5<10)`, `low_rpm(0.97<10)`, `low_breadth(2.35%<30%)` (best segment), `divergent(86.57%<90%)` (EsViritu read identity). Empty when none apply |
+| `blast_flags` | Reasons behind `blast_verdict`, each with the value and the threshold it failed: `short_alignment(81bp<200bp)`, `low_contig_cov(1.9%<20%)` (best contig), `low_ref_cov(98bp<1000bp;0.62%<30%)` (contigs below both reference-coverage thresholds), `divergent(82.18%<90%)` (BLAST identity). Empty when none apply |
 
 ### Read funnel
 
@@ -456,7 +496,8 @@ Mapping evidence (EsViritu) and de novo evidence (SPAdes + BLAST) are judged sep
 | `genome_length_bp` | Reference assembly length (sum of all segments for multi-segment viruses) |
 | `esv_read_count` | Reads assigned to this virus by EsViritu |
 | `esv_covered_bases` | Number of reference bases covered by at least one read |
-| `esv_breadth_pct` | Breadth of coverage: `esv_covered_bases / genome_length_bp × 100` |
+| `esv_breadth_pct` | Breadth of coverage: `esv_covered_bases / genome_length_bp × 100` (whole genome, all segments) |
+| `esv_segment_breadth_pct` | Breadth of the best-covered segment for segmented viruses (`= esv_breadth_pct` otherwise); used for `esv_verdict` |
 | `esv_ani` | Average nucleotide identity of aligned reads to the reference |
 | `pi` | π (nucleotide diversity): mean pairwise nucleotide differences per site |
 | `RPKMF` | Reads Per Kilobase per Million filtered reads (denominator = `host_filtered_reads`) |
@@ -472,6 +513,7 @@ Mapping evidence (EsViritu) and de novo evidence (SPAdes + BLAST) are judged sep
 | `longest_contig_bp` | Length of the longest assembled contig |
 | `contig_aln_bp` | Query bases of the best contig (most aligned bases) covered by BLAST hits to its assigned reference |
 | `contig_aln_pct` | `contig_aln_bp` as % of that contig's length |
+| `blast_ref_cov_bp` | Reference bases covered by the taxon's contigs (all segments together); used for `blast_verdict` |
 | `best_blast_reference` | Non-segmented: accession of the reference with the highest total BLAST bit score. Segmented: best accession per segment, `segment:accession;...` (e.g. `L:KF974361.1;M:KF974359.1`). Segments may come from different assemblies (e.g. reassortants). |
 | `blast_coverage` | Reference coverage by assembled contigs. Non-segmented viruses: % of the best reference genome covered (e.g. `92.5%`). Segmented viruses: per-segment coverage, `seg<label>:<pct>%;...` (e.g. `segL:85%;segM:85%;segS:no_hit`); expected segments are those of the best-supported reference assembly, segment labels are harmonised across assemblies (`L RNA` → `L`, `RNA 2` → `2`), and `seg?` = hit to a reference without a segment annotation. `NA` when no contig was assigned |
 | `blast_identity_pct` | Nucleotide identity of the best BLAST hit |
@@ -493,11 +535,12 @@ A virus found **only** by tblastx gets its own row with `verdict = protein_hit_o
 
 | Column | Description |
 |---|---|
-| `genome_assessment` | Placed right after the verdicts. Overall called (non-`N`) bases over all segments as % of the reference length: `complete` (≥ `--genome_complete_pct`, default 90), `partial` (≥ `--genome_partial_pct`, default 50), `fragmented` (below), `no_genome` (scaffolding ran but no base was called). A segmented virus with an expected segment without any contig (`no_hit` in `blast_coverage`) is at most `partial` |
-| `genome_coverage` | Called (non-`N`) bases of the polished genome as % of the reference. Segmented viruses: per segment, `seg<label>:<pct>%;...`, `no_genome` when a segment had contigs but no genome was built |
-| `genome_N_pct` | % `N` in the polished genome (all segments together) |
+| `genome_assessment` | Placed right after the verdicts. Overall called (non-`N`) bases over all segments as % of the reference length: `complete` (≥ `--genome_complete_pct`, default 90), `high` (≥ `--genome_high_pct`, 70), `partial` (≥ `--genome_partial_pct`, 50), `low` (≥ `--genome_low_pct`, 30), `fragmented` (below), `no_genome` (scaffolding ran but no base was called). A segmented virus with an expected segment without any contig (`no_hit` in `blast_coverage`) is never `complete` |
+| `genome_coverage` | Reference positions with a called (non-`N`) base as % of the reference. Segmented viruses: per segment, `seg<label>:<pct>%;...`, `no_genome` when a segment had contigs but no genome was built |
+| `genome_N_pct` | % `N` in the full-length polished genome, end `N`s included (all segments together) |
 | `genome_mean_depth` | Length-weighted mean read depth |
-| `genome_len` | Total polished genome length (bp, all segments) |
+| `genome_len` | Total full-length genome length (bp, all segments; reference length plus overhangs) |
+| `genome_trimmed_len` | Total length without end `N`s (bp, all segments) |
 | `genome_n_contigs` | Contigs placed on the reference (all segments) |
 
 ---
@@ -591,10 +634,10 @@ Label-based values are capped at `--max_cpus`, `--max_memory`, and `--max_time`.
 
 | Process(es) | Container |
 |---|---|
-| HOST_FILTER, FASTP_TRIM, FASTP_DEDUP, COLLECT_READ_STATS, SUMMARIZE_ESV, VISUALIZE_VALIDATION, SUMMARIZE_VALIDATION | `community.wave.seqera.io/library/bowtie2_esviritu_samtools_seqkit_r-tidyverse:3ee4a52f7d6ae7d9` |
+| HOST_FILTER, FASTP_TRIM, FASTP_DEDUP, COLLECT_READ_STATS, SUMMARIZE_ESV, SUMMARIZE_VALIDATION | `community.wave.seqera.io/library/bowtie2_esviritu_samtools_seqkit_r-tidyverse:3ee4a52f7d6ae7d9` |
 | ESVIRITU | `esviritu_pipeline:latest` (built locally from `docker/Dockerfile`) |
 | SPLIT_VIRAL_READS, SPADES_ASSEMBLY, FILTER_HOST_CONTIGS, BLASTN_VALIDATE | `community.wave.seqera.io/library/blast_samtools_seqkit_spades:fc92dccb1ec56163` |
-| SUMMARIZE_READ_STATS, MAKE_OVERVIEW_TABLE | `community.wave.seqera.io/library/r-tidyverse:2.0.0--dd61b4cbf9e28186` |
+| SUMMARIZE_READ_STATS, MAKE_OVERVIEW_TABLE, VISUALIZE_VALIDATION, VISUALIZE_GENOMES | `community.wave.seqera.io/library/r-pdftools_r-tidyverse:eb8d2ad34f3396f1` |
 | SCAFFOLD_GROUPS, SCAFFOLD_MINIMAP2, POLISH_SCAFFOLD | default image (`bowtie2_esviritu_samtools_seqkit_r-tidyverse`, includes minimap2 and samtools ≥ 1.16) |
 
 ---

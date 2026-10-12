@@ -21,8 +21,9 @@
  *     genome_ref_cov_pct, genome_N_pct, genome_mean_depth, genome_len,
  *     genome_n_contigs from POLISH_SCAFFOLD; per-segment inline strings for
  *     segmented viruses. genome_assessment (placed after the verdicts):
- *     complete / partial / fragmented / no_genome, from overall coverage and
- *     params.genome_complete_pct / genome_partial_pct.
+ *     complete / high / partial / low / fragmented / no_genome, from overall
+ *     coverage and params.genome_complete_pct / high / partial / low_pct;
+ *     blast_assessment grades the contigs' reference coverage the same way.
  *
  *   Part 3c — Protein-level rescue (experimental, params.tblastx_rescue):
  *     tblastx_n_contigs, tblastx_aa_identity_pct, tblastx_contig_aln_pct,
@@ -74,12 +75,14 @@ process MAKE_OVERVIEW_TABLE {
     script:
     """
     make_overview_table.R ${run_validate} ${validate_min_reads} ${assembly_taxon_level} \
-        ${params.verdict_esv_min_reads} ${params.verdict_esv_min_breadth_pct} \
-        ${params.verdict_contig_min_aln_bp} ${params.verdict_contig_min_aln_pct} \
+        ${params.verdict_esv_min_reads} ${params.verdict_esv_min_rpm} \
+        ${params.verdict_esv_min_breadth_pct} ${params.verdict_esv_probable_min_breadth_pct} \
+        ${params.verdict_blast_min_ref_bp} ${params.verdict_blast_min_ref_pct} \
         ${params.verdict_artefact_max_aln_bp} ${params.verdict_artefact_max_aln_pct} \
         ${params.verdict_esv_divergent_identity_pct} ${params.verdict_blast_divergent_identity_pct} \
         ${params.verdict_recurrent_min_samples} \
-        ${params.genome_complete_pct} ${params.genome_partial_pct}
+        ${params.genome_complete_pct} ${params.genome_high_pct} \
+        ${params.genome_partial_pct} ${params.genome_low_pct}
     """
 }
 

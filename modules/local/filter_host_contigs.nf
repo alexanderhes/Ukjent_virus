@@ -38,7 +38,7 @@ process FILTER_HOST_CONTIGS {
     output:
     tuple val(meta), path("${meta.id}_query.nohost.fasta"), emit: query
     tuple val(meta), path("${meta.id}_host_contigs.tsv"),   emit: report
-    path "${meta.id}_host_blast.tsv",                        emit: blast
+    tuple val(meta), path("${meta.id}_host_blast.tsv"),     emit: blast
 
     script:
     def db           = file(params.host_blastdb).name
