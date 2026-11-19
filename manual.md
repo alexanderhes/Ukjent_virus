@@ -175,7 +175,7 @@ sample2-UV;/path/to/raw_data/sample2-UV
 |---|---|---|
 | `--validate` | `false` | Enable the validation sub-workflow |
 | `--validate_min_reads` | `50` | Minimum virus-specific reads required to attempt SPAdes assembly |
-| `--validate_min_contig_len` | `800` | Minimum contig length (bp) to pass to BLAST |
+| `--validate_min_contig_len` | `300` | Minimum contig length (bp) to pass to BLAST |
 | `--validate_spades_max_pairs` | `500000` | If greater than 0, sample-level deduplicated read pairs above this cap are deterministically subsampled before SPAdes |
 | `--validate_spades_sample_seed` | `11` | Random seed used for deterministic SPAdes input subsampling |
 | `--assembly_taxon_level` | `subspecies` | Taxonomic grouping level for read extraction before assembly. `subspecies` uses the finest available rank (recommended for diverse groups such as Enteroviruses and Rotaviruses); `species` always groups at species level. |
@@ -669,7 +669,7 @@ BLAST is run against a per-species reference database extracted from the EsVirit
 
 ### `blast_coverage` is lower than `esv_breadth_pct`
 
-`esv_breadth_pct` is based on all reads mapping to the reference (EsViritu metric). `blast_coverage` is based only on assembled contigs ≥ 800 bp with significant BLAST hits. Read-level coverage will always be more complete than contig-level coverage, especially for low-coverage samples where reads are too sparse to assemble long contigs.
+`esv_breadth_pct` is based on all reads mapping to the reference (EsViritu metric). `blast_coverage` is based only on assembled contigs ≥ `--validate_min_contig_len` (default 300 bp) with significant BLAST hits. Read-level coverage will always be more complete than contig-level coverage, especially for low-coverage samples where reads are too sparse to assemble long contigs.
 
 ### Cleaning up work files
 

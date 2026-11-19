@@ -24,7 +24,7 @@
 
 ### Available host aliases
 - `human` — human T2T (GCA_009914755.4) + PhiX174
-- `moose` — Norwegian moose (*Alces alces*) — index not built yet; the profile path in `nextflow.config` is a placeholder
+- `moose` — Norwegian moose (*Alces alces*) — `/mnt/databases/genome_references/moose`
 
 New database or host aliases need both a `db_<alias>` / `host_<alias>` profile in
 `nextflow.config` and an entry in `VALID_DB_ALIASES` / `VALID_HOST_ALIASES` in `NGS_wrapper.sh`.

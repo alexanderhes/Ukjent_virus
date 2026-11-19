@@ -428,7 +428,7 @@ activate_nextflow
 # 1. Pipeline version: a release tag (v<manifest.version in nextflow.config>).
 #    Production runs only tagged releases; see CHANGELOG.md. To release, bump
 #    manifest.version, tag the commit, push the tag, then change VERSION here.
-VERSION="v0.1.0"
+VERSION="v0.1.1"
 set_status "Pipeline version: $VERSION"
 
 # 2. Tell Nextflow to refresh the code from GitHub

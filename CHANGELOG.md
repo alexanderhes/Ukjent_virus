@@ -9,6 +9,17 @@ Production (`NGS_wrapper.sh`) runs a tagged release (`VERSION="v<version>"`).
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-11-19
+
+### Changed
+- `--validate_min_contig_len` default 800 → 300. Real viral contigs of
+  300–799 bp (gap fillers, low-abundance viruses) were dropped; short artefacts
+  are already caught by BLAST and the `verdict_artefact_*` thresholds.
+  Contig-based coverage, `blast_assessment` and verdicts can rise; more
+  `artefact_suspected` rows appear in the overview.
+- `host_moose` profile points to `/mnt/databases/genome_references/moose`.
+- `NGS_wrapper.sh` runs `v0.1.1`.
+
 ## [0.1.0] — 2026-11-19
 
 First tagged release, not yet feature complete (1.0.0 is kept for that).
