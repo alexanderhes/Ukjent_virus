@@ -9,10 +9,11 @@ Production (`NGS_wrapper.sh`) runs a tagged release (`VERSION="v<version>"`).
 
 ## [Unreleased]
 
-## [1.0.0] — 2026-11-19
+## [0.1.0] — 2026-11-19
 
-First tagged release. The pipeline code equals commit `978654d` on
-`Assembly_v2` (in production since 2026-10-12), plus versioning and tooling.
+First tagged release, not yet feature complete (1.0.0 is kept for that).
+The pipeline code equals commit `978654d` on `Assembly_v2` (in production
+since 2026-10-12), plus versioning and tooling.
 
 ### Added
 - Version number (`manifest.version`), printed at the top of every run log and
@@ -48,6 +49,6 @@ First tagged release. The pipeline code equals commit `978654d` on
 - `--polish_iupac` and the stats column `n_ambig`.
 - `--verdict_contig_min_aln_bp` / `--verdict_contig_min_aln_pct`.
 
-## Before 1.0.0
+## Before 0.1.0
 
 Untagged. See `git log` up to `978654d`.
