@@ -317,6 +317,33 @@ mkdir -p "$TMP_SAMPLESHEET_DIR"
 
 # --- 3. DOWNLOAD SAMPLESHEET & FASTQ FILES ---
 
+# With --resume, reuse the FASTQs of the previous attempt when that download
+# finished (marker written after step 4). Downloading again gives the files new
+# timestamps, and Nextflow would then rerun every task instead of resuming.
+FINAL_SAMPLESHEET="${TMP_SAMPLESHEET_DIR}/${RUN}_samplesheet_filled.csv"
+DOWNLOAD_MARKER="${TMP_DIR}/.download_complete"
+REUSE_DOWNLOAD=false
+if $RESUME; then
+    if [ -f "$DOWNLOAD_MARKER" ] && [ -s "$FINAL_SAMPLESHEET" ]; then
+        missing=$(tail -n +2 "$FINAL_SAMPLESHEET" | while IFS=';' read -r s d; do
+            [ -z "$s" ] && continue
+            { [ -d "$d" ] && [ -n "$(ls -A "$d")" ]; } || echo "$s"
+        done)
+        if [ -z "$missing" ]; then
+            REUSE_DOWNLOAD=true
+            set_status "Resume: reusing downloaded FASTQs in $TMP_DIR and $FINAL_SAMPLESHEET (no new download)"
+        else
+            set_status "Resume: sample folders missing or empty ($(echo $missing)); downloading again"
+        fi
+    else
+        set_status "Resume: no completed download found for $RUN; downloading again"
+    fi
+fi
+
+if ! $REUSE_DOWNLOAD; then
+# Steps 3 and 4 (not indented, to keep the heredocs simple)
+rm -f "$DOWNLOAD_MARKER"
+
 # Step 3a: Download the samplesheet from the N-drive.
 # Format: sample;fastq_dir  (semicolon-delimited, UTF-8 or Windows BOM)
 echo "Downloading samplesheet: ${RUN}_samplesheet.csv"
@@ -391,7 +418,6 @@ echo "All samples downloaded."
 
 # The N-drive samplesheet has format: sample;fastq_dir
 # Replace each fastq_dir with the local path where the sample was just downloaded.
-FINAL_SAMPLESHEET="${TMP_SAMPLESHEET_DIR}/${RUN}_samplesheet_filled.csv"
 
 echo "Building Nextflow samplesheet..."
 echo "  Input:    $RAW_SAMPLESHEET"
@@ -419,6 +445,8 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "Samplesheet created: $FINAL_SAMPLESHEET"
+touch "$DOWNLOAD_MARKER"
+fi  # end of: if ! $REUSE_DOWNLOAD
 
 
 # --- 5. RUN PIPELINE ---
@@ -428,7 +456,7 @@ activate_nextflow
 # 1. Pipeline version: a release tag (v<manifest.version in nextflow.config>).
 #    Production runs only tagged releases; see CHANGELOG.md. To release, bump
 #    manifest.version, tag the commit, push the tag, then change VERSION here.
-VERSION="v0.1.1"
+VERSION="v0.1.2"
 set_status "Pipeline version: $VERSION"
 
 # 2. Tell Nextflow to refresh the code from GitHub

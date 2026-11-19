@@ -108,6 +108,12 @@ Add `-resume` to reuse cached results for completed steps:
 nextflow run main.nf ... -resume
 ```
 
+Through the wrapper, use `--resume` with the same `-r/-a/-y`. If the previous
+attempt finished its download, the wrapper reuses those FASTQs instead of
+downloading them again; new copies would get new timestamps, and Nextflow
+would rerun every task. The `server` profile also sets `process.cache = 'lenient'`
+(cache keyed on file path and size), so a re-download still resumes.
+
 ### Run the test dataset
 
 ```bash

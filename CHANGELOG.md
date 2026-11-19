@@ -9,6 +9,18 @@ Production (`NGS_wrapper.sh`) runs a tagged release (`VERSION="v<version>"`).
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-11-19
+
+### Fixed
+- `NGS_wrapper.sh --resume` downloaded the FASTQs again, which gave them new
+  timestamps, so Nextflow reran every task. With `--resume` the wrapper now
+  reuses the previous download when it finished (marker `.download_complete`
+  in the run's raw folder, written after the samplesheet is built) and every
+  sample folder is non-empty; otherwise it downloads again.
+- `server` profile uses `process.cache = 'lenient'` (input files keyed on path
+  and size, not timestamps), so copied-again inputs still resume.
+- `NGS_wrapper.sh` runs `v0.1.2`.
+
 ## [0.1.1] — 2026-11-19
 
 ### Changed

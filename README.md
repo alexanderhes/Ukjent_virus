@@ -15,7 +15,7 @@
 | `-d`, `--db` | EsViritu database alias | `v3_2_4` |
 | `-H`, `--host` | Host reference alias used for host read removal | `human` |
 | `--sensitive-filter` | High-sensitivity host filtering (slower; R1 and R2 mapped separately with bowtie2 `--very-sensitive-local`, then re-paired). Default is a single paired-end bowtie2 `--sensitive-local` run. | off |
-| `--resume` | Resume a previous Nextflow run | off |
+| `--resume` | Resume a previous Nextflow run; reuses that run's downloaded FASTQs when their download finished | off |
 | `-h`, `--help` | Show usage | |
 
 ### Available database aliases
