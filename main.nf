@@ -26,6 +26,7 @@ log.info """
     ╔═══════════════════════════════════════════════╗
     ║           EsViritu Nextflow Pipeline          ║
     ╠═══════════════════════════════════════════════╣
+    ║  version     : ${workflow.manifest.version}${workflow.revision ? " (revision ${workflow.revision})" : ''}${workflow.commitId ? " commit ${workflow.commitId.take(7)}" : ''}
     ║  samplesheet : ${params.samplesheet}
     ║  host_index  : ${params.host_index}
     ║  esviritu_db : ${params.esviritu_db}

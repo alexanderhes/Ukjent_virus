@@ -562,7 +562,7 @@ bash NGS_wrapper.sh -r <analysis_name> -a <AGENS> -y <YEAR>
 **Example:**
 
 ```bash
-bash NGS_wrapper.sh -r NGS_SEQ-20260210-01 -a UkjentVirus -y 2026
+bash NGS_wrapper.sh -r NGS_SEQ-YYYYMMDD-NN -a UkjentVirus -y 2026
 ```
 
 **Arguments:**
@@ -607,8 +607,8 @@ Required format — semicolon-delimited, two columns:
 
 ```
 sample;fastq_dir
-sample1-UV;/mnt/N/Virologi/NGS/0-Sekvenseringsbiblioteker/Illumina_Run/NGS_SEQ-20260210-01/sample1-UV
-sample2-UV;/mnt/N/Virologi/NGS/0-Sekvenseringsbiblioteker/Illumina_Run/NGS_SEQ-20260210-01/sample2-UV
+sample1-UV;/mnt/N/Virologi/NGS/0-Sekvenseringsbiblioteker/Illumina_Run/NGS_SEQ-YYYYMMDD-NN/sample1-UV
+sample2-UV;/mnt/N/Virologi/NGS/0-Sekvenseringsbiblioteker/Illumina_Run/NGS_SEQ-YYYYMMDD-NN/sample2-UV
 ```
 
 - `sample` — unique sample identifier (no spaces)

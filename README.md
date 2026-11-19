@@ -4,7 +4,7 @@
 
 | Flag | Description | Example |
 |------|-------------|---------|
-| `-r` | Run name | `NGS_SEQ-20260210-01` |
+| `-r` | Run name | `NGS_SEQ-YYYYMMDD-NN` |
 | `-a` | Agens subfolder on the N-drive | `UkjentVirus` |
 | `-y` | Year | `2026` |
 
@@ -92,3 +92,9 @@ Nothing is deleted from the server unless the upload to N has been verified
 Nextflow work directory and logs are kept, and the status file shows the
 `--upload-only` command to retry. Nextflow intermediates are kept in
 `/mnt/tempdata/esv_work` (`server` profile).
+
+## Versions and development
+
+Production runs a tagged release (`VERSION` in `NGS_wrapper.sh`); the running
+version is printed at the top of every run log. Changes per release:
+[CHANGELOG.md](CHANGELOG.md).

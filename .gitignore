@@ -32,4 +32,11 @@ assets/test_samplesheet.csv
 *.tmp
 
 # Local session handoff notes (not shared)
-HANDOFF.md
+HANDOFF*.md
+
+# Local-only: identifier list for notes/check_sensitive.py, the regression
+# test settings, baseline and runs (they name samples), and local notes
+# (TODO, decisions, development guide, sample-ID guard and its git hooks)
+.sensitive-ids
+tests/local/
+notes/
